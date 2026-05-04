@@ -564,21 +564,20 @@ body {
 }
 
 /* === App footer (ported from mfp Ink & Steel pattern, 2026-05-04) ===
- * Two rows: brand + copyright on top, legal links right-aligned below.
- * Hardcoded hex matches mfp dark-theme tokens; reuses .wm-text colour
- * for the wordmark via the IntellagenticLogo port.
+ * Single flex row, space-between. LEFT: logo + dash + italic tagline.
+ * RIGHT: legal links + middle-dot separators + a thin vertical rule +
+ * the (c) line. Hardcoded hex matches mfp dark-theme tokens; reuses
+ * .wm-text colour for the wordmark via the IntellagenticLogo port.
  */
 .app-footer {
-  padding: 12px 20px 14px;
-  background: #0C1A2A;
-  border-top: 1px solid #2B3F5C;
-  font-family: 'Archivo', system-ui, sans-serif;
-}
-.app-footer-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  padding: 10px 20px;
+  background: #0C1A2A;
+  border-top: 1px solid #2B3F5C;
+  font-family: 'Archivo', system-ui, sans-serif;
 }
 .app-footer-left {
   display: inline-flex;
@@ -592,7 +591,10 @@ body {
   color: #E8E1CF;
   font-size: 12.5px;
 }
-.app-footer-meta {
+.app-footer-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   color: #7E8DA0;
   font-size: 10px;
@@ -600,18 +602,17 @@ body {
   text-transform: uppercase;
   white-space: nowrap;
 }
-.app-footer-links {
-  display: flex;
-  justify-content: flex-end;
-  gap: 16px;
-  margin-top: 8px;
-}
-.app-footer-links a {
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
+.app-footer-right a {
   color: #7E8DA0;
-  font-size: 10px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
   text-decoration: none;
 }
-.app-footer-links a:hover { color: #E8E1CF; }
+.app-footer-right a:hover { color: #E8E1CF; }
+.app-footer-sep { color: #7E8DA0; }
+.app-footer-rule {
+  display: inline-block;
+  width: 1px;
+  height: 12px;
+  background: #2B3F5C;
+  margin: 0 4px;
+}
+.app-footer-meta { color: #7E8DA0; }

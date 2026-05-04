@@ -613,21 +613,22 @@ function LoginScreen({ onLogin }) {
         </div>
       </div>
 
-      {/* Footer -- matches MFP Ink & Steel pattern */}
+      {/* Footer -- single row, MFP Ink & Steel pattern */}
       <footer className="app-footer">
-        <div className="app-footer-row">
-          <span className="app-footer-left">
-            <IntellagenticLogo height={20} />
-            <span className="app-footer-dash">&mdash;</span>
-            <span className="app-footer-tagline">The end of guesswork.</span>
-          </span>
-          <span className="app-footer-meta">&copy; 2026 INTELLAGENTIC LIMITED.</span>
-        </div>
-        <div className="app-footer-links">
+        <span className="app-footer-left">
+          <IntellagenticLogo height={20} />
+          <span className="app-footer-dash">&mdash;</span>
+          <span className="app-footer-tagline">The end of guesswork.</span>
+        </span>
+        <span className="app-footer-right">
           <a href="/terms">Terms</a>
+          <span className="app-footer-sep" aria-hidden="true">&middot;</span>
           <a href="/privacy">Privacy</a>
+          <span className="app-footer-sep" aria-hidden="true">&middot;</span>
           <a href="/security">Security</a>
-        </div>
+          <span className="app-footer-rule" aria-hidden="true" />
+          <span className="app-footer-meta">&copy; 2026 INTELLAGENTIC LIMITED.</span>
+        </span>
       </footer>
     </div>
   )
