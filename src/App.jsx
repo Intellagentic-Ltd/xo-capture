@@ -347,7 +347,6 @@ function LoginScreen({ onLogin }) {
       <header className="header" style={{ position: 'relative' }}>
         <div className="header-inner">
           <div className="header-left">
-            <div className="logo-box">XO</div>
             <div className="header-title">
               <h1>
                 <span>Capture</span>
@@ -357,7 +356,7 @@ function LoginScreen({ onLogin }) {
           </div>
           <div className="header-right">
             <div style={{cursor:"pointer"}} onClick={()=>{window.open("https://www.intellagentic.io","_blank")}}>
-            <IntellagenticLogo height={26} />
+            <IntellagenticLogo height={32} />
             </div>
           </div>
         </div>
@@ -1255,19 +1254,6 @@ function InvitePage() {
     }}>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-        <div style={{
-          background: '#dc2626',
-          borderRadius: '6px',
-          width: '30px',
-          height: '30px',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          fontWeight: 800,
-          fontSize: '15px',
-          color: '#fff',
-          letterSpacing: '-1px'
-        }}>XO</div>
         <span style={{ fontSize: '18px', fontWeight: 600, color: '#fff', letterSpacing: '1px' }}>Capture</span>
       </div>
 
@@ -2722,7 +2708,6 @@ export default function App() {
       <header className="header" style={{ position: 'fixed', top: 0, left: `${contentOffset}px`, right: 0, zIndex: 130, transition: 'left 0.2s ease' }}>
         <div className="header-inner">
           <div className="header-left">
-            <div className="logo-box">XO</div>
             <div className="header-title">
               <h1>
                 <span className="header-title-desktop">Capture</span>
@@ -2738,7 +2723,7 @@ export default function App() {
           </div>
           <div className="header-right" style={{display: 'flex', alignItems: 'center'}}>
             <div style={{cursor:"pointer"}} onClick={()=>{window.open("https://www.intellagentic.io","_blank")}}>
-            <IntellagenticLogo height={26} />
+            <IntellagenticLogo height={32} />
             </div>
           </div>
         </div>
