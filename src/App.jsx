@@ -613,15 +613,22 @@ function LoginScreen({ onLogin }) {
         </div>
       </div>
 
-      {/* Footer */}
-      <div style={{ textAlign: 'center', padding: '0.375rem 0', fontSize: '11px', color: '#808080' }}>
-        &copy; 2026 Intellagentic Limited. All rights reserved.
-      </div>
-      <div style={{ textAlign: 'center', padding: '0.25rem 0 0.75rem', display: 'flex', justifyContent: 'center', gap: '1rem' }}>
-        <a href="/terms" style={{ fontSize: '0.8rem', color: '#888', textDecoration: 'none' }}>Terms</a>
-        <a href="/privacy" style={{ fontSize: '0.8rem', color: '#888', textDecoration: 'none' }}>Privacy</a>
-        <a href="/security" style={{ fontSize: '0.8rem', color: '#888', textDecoration: 'none' }}>Security</a>
-      </div>
+      {/* Footer -- matches MFP Ink & Steel pattern */}
+      <footer className="app-footer">
+        <div className="app-footer-row">
+          <span className="app-footer-left">
+            <IntellagenticLogo height={20} />
+            <span className="app-footer-dash">&mdash;</span>
+            <span className="app-footer-tagline">The end of guesswork.</span>
+          </span>
+          <span className="app-footer-meta">&copy; 2026 INTELLAGENTIC LIMITED.</span>
+        </div>
+        <div className="app-footer-links">
+          <a href="/terms">Terms</a>
+          <a href="/privacy">Privacy</a>
+          <a href="/security">Security</a>
+        </div>
+      </footer>
     </div>
   )
 }

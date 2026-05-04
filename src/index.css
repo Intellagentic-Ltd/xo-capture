@@ -562,3 +562,56 @@ body {
   box-shadow: inset 0 0 0 1px rgba(0,0,0,0.15), inset 1px 1px 2px rgba(255,255,255,0.08);
   flex-shrink: 0;
 }
+
+/* === App footer (ported from mfp Ink & Steel pattern, 2026-05-04) ===
+ * Two rows: brand + copyright on top, legal links right-aligned below.
+ * Hardcoded hex matches mfp dark-theme tokens; reuses .wm-text colour
+ * for the wordmark via the IntellagenticLogo port.
+ */
+.app-footer {
+  padding: 12px 20px 14px;
+  background: #0C1A2A;
+  border-top: 1px solid #2B3F5C;
+  font-family: 'Archivo', system-ui, sans-serif;
+}
+.app-footer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.app-footer-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.app-footer-dash { color: #7E8DA0; }
+.app-footer-tagline {
+  font-family: 'Source Serif 4', Georgia, serif;
+  font-style: italic;
+  color: #E8E1CF;
+  font-size: 12.5px;
+}
+.app-footer-meta {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  color: #7E8DA0;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.app-footer-links {
+  display: flex;
+  justify-content: flex-end;
+  gap: 16px;
+  margin-top: 8px;
+}
+.app-footer-links a {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  color: #7E8DA0;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-decoration: none;
+}
+.app-footer-links a:hover { color: #E8E1CF; }
