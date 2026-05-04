@@ -535,3 +535,30 @@ body {
 #deployment-brief-content pre { page-break-inside: avoid; }
 #deployment-brief-content table { page-break-inside: avoid; }
 .pdf-hide-in-export { } /* marker class — html2pdf captures as-is */
+
+/* === Intellagentic XO logo lockup (ported from mfp 2026-05-04) ===
+ * Used by src/components/IntellagenticLogo.jsx. Hex values mirror mfp's
+ * dark-theme tokens (bone wordmark on cool ink, vermilion Hanko stamp);
+ * all xo-capture usages render on the dark navy header.
+ */
+.wm-lockup {
+  display: inline-flex; align-items: center; gap: 8px;
+}
+.wm-text {
+  font-family: 'Archivo', system-ui, sans-serif;
+  font-weight: 600;
+  letter-spacing: -0.045em;
+  color: #E8E1CF;
+  line-height: 1;
+}
+.hanko {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: #D8401E;
+  color: #E8E1CF;
+  font-family: 'Noto Serif JP', 'Source Serif 4', Georgia, serif;
+  font-weight: 700;
+  border-radius: 3px;
+  transform: rotate(-2deg);
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.15), inset 1px 1px 2px rgba(255,255,255,0.08);
+  flex-shrink: 0;
+}

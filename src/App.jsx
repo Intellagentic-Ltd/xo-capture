@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react'
 import { X, Upload, Sparkles, FileText, Building2, FileText as FileIcon, Trash2, CheckCircle2, Music, Loader2, CheckCircle, Clock, AlertCircle, AlertTriangle, ChevronDown, ChevronUp, ChevronRight, Database, Calendar, Globe, TrendingUp, Menu, Settings, Moon, Sun, GripVertical, Copy, Edit2, Plus, Home, Zap, Heart, Star, Send, Check, Save, User, Users, Bell, Search, Mail, Phone, MapPin, Play, ExternalLink, Package, LogOut, Lock, Eye, EyeOff, Cloud, FolderOpen, ChevronLeft, HardDrive, MoreVertical, ToggleLeft, ToggleRight, History, RefreshCw, Image, FileSpreadsheet, FileType, File, Download, Link, Share2,FileScan } from 'lucide-react'
 import logoLight from './assets/logo-light.png'
 import logoDark from './assets/logo-dark.png'
+import IntellagenticLogo from './components/IntellagenticLogo'
 import intellistackLogo from './assets/intellistack-logo.png'
 import intellistackLogoDark from './assets/intellistack-logo-dark.png'
 
@@ -356,7 +357,7 @@ function LoginScreen({ onLogin }) {
           </div>
           <div className="header-right">
             <div style={{cursor:"pointer"}} onClick={()=>{window.open("https://www.intellagentic.io","_blank")}}>
-            <img src={logoLight} alt="Intellagentic" style={{ height: '26px' }} />
+            <IntellagenticLogo height={26} />
             </div>
           </div>
         </div>
@@ -1484,7 +1485,7 @@ function InvitePage() {
             <CheckCircle size={40} style={{ color: '#22c55e', marginBottom: '12px' }} />
             <h2 style={{ fontSize: '24px', fontWeight: 600, color: '#fff', margin: '0 0 8px' }}>You're in.</h2>
             <p style={{ color: '#aaa', fontSize: '15px', margin: '0 0 24px' }}>We'll send your access on March 23.</p>
-            <img src={logoLight} alt="Intellagentic" style={{ height: '22px', opacity: 0.5 }} />
+            <span style={{ opacity: 0.5 }}><IntellagenticLogo height={22} /></span>
           </div>
         )}
       </div>
@@ -2737,7 +2738,7 @@ export default function App() {
           </div>
           <div className="header-right" style={{display: 'flex', alignItems: 'center'}}>
             <div style={{cursor:"pointer"}} onClick={()=>{window.open("https://www.intellagentic.io","_blank")}}>
-            <img src={logoLight} alt="Intellagentic" style={{ height: '26px' }} />
+            <IntellagenticLogo height={26} />
             </div>
           </div>
         </div>
