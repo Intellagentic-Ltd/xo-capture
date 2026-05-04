@@ -349,7 +349,7 @@ function LoginScreen({ onLogin }) {
           <div className="header-left">
             <div className="header-title">
               <h1>
-                <span>Capture</span>
+                <span>XO Capture</span>
                 <span className="version-badge">Rapid Prototype</span>
               </h1>
             </div>
@@ -2710,8 +2710,8 @@ export default function App() {
           <div className="header-left">
             <div className="header-title">
               <h1>
-                <span className="header-title-desktop">Capture</span>
-                <span className="header-title-mobile">Capture</span>
+                <span className="header-title-desktop">XO Capture</span>
+                <span className="header-title-mobile">XO Capture</span>
                 <span className="version-badge">Rapid Prototype</span>
               </h1>
               {currentScreen === 'dashboard' && (
