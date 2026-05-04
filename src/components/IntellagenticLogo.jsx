@@ -23,7 +23,7 @@ export default function IntellagenticLogo({ height = 28 }) {
     >
       <span
         className="wm-text"
-        style={{ fontSize, color: 'var(--text-0)' }}
+        style={{ fontSize }}
       >
         Intellagentic
       </span>
