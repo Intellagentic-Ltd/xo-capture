@@ -2876,10 +2876,29 @@ export default function App() {
 
       </div>{/* end right-side wrapper */}
 
-      {/* Footer — outside content wrapper so overflowX:hidden doesn't affect it */}
-      <div style={{ position: 'fixed', bottom: 0, left: `${contentOffset}px`, right: 0, textAlign: 'center', padding: '0.5rem 1rem', fontSize: '11px', color: '#6b7280', zIndex: 200, transition: 'left 0.2s ease', background: 'var(--bg-body, #f0f0f0)', borderTop: '1px solid var(--border-color, #e5e5e5)' }}>
-        &copy; 2026 Intellagentic Limited. All rights reserved. &nbsp;|&nbsp; <a href="/terms" style={{ color: '#6b7280', textDecoration: 'none' }}>Terms</a> &middot; <a href="/privacy" style={{ color: '#6b7280', textDecoration: 'none' }}>Privacy</a> &middot; <a href="/security" style={{ color: '#6b7280', textDecoration: 'none' }}>Security</a>
-      </div>
+      {/* Footer -- outside content wrapper so overflowX:hidden doesn't affect it.
+          Position is fixed (sidebar-offset is dynamic), but typography / border /
+          background come from the .app-footer class so the post-login footer
+          looks identical to the sign-in screen footer. */}
+      <footer
+        className="app-footer"
+        style={{ position: 'fixed', bottom: 0, left: `${contentOffset}px`, right: 0, zIndex: 200, transition: 'left 0.2s ease' }}
+      >
+        <span className="app-footer-left">
+          <IntellagenticLogo height={20} />
+          <span className="app-footer-dash">&mdash;</span>
+          <span className="app-footer-tagline">The end of guesswork.</span>
+        </span>
+        <span className="app-footer-right">
+          <a href="/terms">Terms</a>
+          <span className="app-footer-sep" aria-hidden="true">&middot;</span>
+          <a href="/privacy">Privacy</a>
+          <span className="app-footer-sep" aria-hidden="true">&middot;</span>
+          <a href="/security">Security</a>
+          <span className="app-footer-rule" aria-hidden="true" />
+          <span className="app-footer-meta">&copy; 2026 INTELLAGENTIC LIMITED.</span>
+        </span>
+      </footer>
 
       {/* Company Information Modal */}
       {showCompanyModal && (
