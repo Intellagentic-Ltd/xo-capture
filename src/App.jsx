@@ -2588,7 +2588,10 @@ export default function App() {
           position: 'fixed',
           top: 0,
           left: 0,
-          bottom: 0,
+          // 40px == .app-footer rendered height (10px padding + 20px logo + 10px padding).
+          // Stops the sidebar above the full-width footer so the footer can span
+          // the entire viewport bottom edge.
+          bottom: 40,
           width: `${sidebarVisualWidth}px`,
           background: '#1a1a2e',
           zIndex: 201,
@@ -2882,7 +2885,7 @@ export default function App() {
           looks identical to the sign-in screen footer. */}
       <footer
         className="app-footer"
-        style={{ position: 'fixed', bottom: 0, left: `${contentOffset}px`, right: 0, zIndex: 200, transition: 'left 0.2s ease' }}
+        style={{ position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 200 }}
       >
         <span className="app-footer-left">
           <IntellagenticLogo height={20} />
