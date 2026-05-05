@@ -4055,4 +4055,43 @@ Verification artefacts (puppeteer scripts) cleaned up after each run; not retain
 
 ---
 
+**May 4, 2026 — Brand alignment with mfp:**
+
+Ported the canonical Intellagentic XO logo from intellagentic-ltd/mfp and aligned xo-capture's chrome to the Ink & Steel palette MFP uses. Four PRs, all merged to main, four production deploys.
+
+PR #56 — Logo port + footer redesign
+- Copied frontend/src/components/IntellagenticLogo.jsx from mfp verbatim into src/components/IntellagenticLogo.jsx.
+- Added Google Fonts <link> tags for Archivo, Source Serif 4, JetBrains Mono, Noto Serif JP to index.html (matches mfp's font stack — Hanko XO renders in Noto Serif JP).
+- Replaced three <img src={logoLight}> usages in src/App.jsx with <IntellagenticLogo /> (two header instances at height={32}, one splash at height={22} with 0.5 opacity).
+- Removed the legacy red <div className="logo-box">XO</div> from the header lockup at lines ~349, ~2724, ~1269.
+- Updated the header title text from "Capture" to "XO Capture" at lines ~352, ~2727, ~2728.
+- Restyled the sign-in footer to match the MFP pattern: IntellagenticLogo + em-dash + italic "The end of guesswork." (left), Terms · Privacy · Security · | · © 2026 INTELLAGENTIC LIMITED. (right), single row.
+- IntellagenticLogo internal style change: removed `color: var(--text-0)` from the wordmark span so the .wm-text class (#E8E1CF) drives colour — fixes invisible wordmark on dark headers without adding a global CSS variable.
+
+PR #57 — Post-login footer match
+- Restyled the post-login app-shell footer at line ~2885 to match the sign-in footer treatment.
+
+PR #58 — Full-width footer
+- Two-line layout fix: footer left: 0 (full bleed) + sidebar bottom: <footer-height> so the sidebar stops above the footer instead of overlapping it. No structural refactor — sidebar/header pinning behaviour preserved.
+
+PR #59 — Ink & Steel palette
+- Header background: #1a1a2e → #122236 (--ink)
+- Sidebar background: → #0C1A2A (--ink-deep)
+- Footer background: already #0C1A2A from prior PRs
+- Header bottom border: → #2B3F5C (--ink-rule)
+- User-name colour in sidebar: aligned to bone tones
+- No font changes, no layout changes, no structural changes outside chrome.
+
+Files changed across the four PRs:
+- src/App.jsx (header lockup, footer, sidebar inline styles, post-login footer, layout tweaks)
+- src/index.css (.wm-lockup, .wm-text, .hanko classes; Ink & Steel chrome tokens)
+- src/components/IntellagenticLogo.jsx (added; verbatim from mfp + one-line colour-driver fix)
+- index.html (Google Fonts <link> tags)
+
+Legacy assets logoLight, logoDark PNGs left in place but unused — easy revert path. Not deleted.
+
+Production state after deploy: chrome aligned to MFP's Ink & Steel system, Hanko XO lockup live on every screen, footer consistent across pre/post-login, no behaviour regressions reported.
+
+---
+
 **END OF PROJECT STATUS**
