@@ -2593,7 +2593,7 @@ export default function App() {
           // the entire viewport bottom edge.
           bottom: 40,
           width: `${sidebarVisualWidth}px`,
-          background: '#1a1a2e',
+          background: '#0C1A2A',
           zIndex: 201,
           display: 'flex',
           flexDirection: 'column',
@@ -2620,7 +2620,7 @@ export default function App() {
                   ) : <span style={{ color: 'rgba(255,255,255,0.7)', fontSize: '0.7rem', fontWeight: 600 }}>{(user?.name || '?')[0].toUpperCase()}</span>}
                 </div>
                 <div style={{ minWidth: 0 }}>
-                <span style={{ color: 'white', fontWeight: 600, fontSize: '0.8rem', display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{user?.name || 'Menu'}</span>
+                <span style={{ color: '#E8E1CF', fontWeight: 600, fontSize: '0.8rem', display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{user?.name || 'Menu'}</span>
                 {isAdmin && <span style={{ display: 'inline-block', fontSize: '0.55rem', fontWeight: 700, color: '#fff', background: '#CC0000', padding: '0.05rem 0.35rem', borderRadius: 4, letterSpacing: '0.04em', marginTop: '0.1rem' }}>XO ADMIN</span>}
                 {user?.email && <span style={{ color: 'rgba(255, 255, 255, 0.7)', fontSize: '0.65rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', display: 'block' }}>{user.email}</span>}
                 </div>

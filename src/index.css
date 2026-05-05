@@ -92,8 +92,8 @@ body {
    HEADER
    ============================================================ */
 .header {
-  background: #1a1a2e;
-  border-bottom: 1px solid #0f0f1a;
+  background: #122236;
+  border-bottom: 1px solid #2B3F5C;
   padding: 0.75rem 1rem;
 }
 
@@ -128,7 +128,7 @@ body {
 .header-title h1 {
   font-size: 1rem;
   font-weight: 700;
-  color: white;
+  color: #E8E1CF;
 }
 
 .header-title p {
