@@ -2865,6 +2865,7 @@ export default function App() {
           />
         )}
         {currentScreen === 'enrich' && (
+          <div data-dxo="enrichment-results" style={{ display: 'contents' }}>
           <EnrichScreen
             clientId={clientId}
             onComplete={() => setCurrentScreen('results')}
@@ -2872,8 +2873,13 @@ export default function App() {
             activeEngagement={activeEngagement}
             onNavigate={navigateTo}
           />
+          </div>
         )}
-        {currentScreen === 'results' && <ResultsScreen setShowModal={setShowModal} clientId={clientId} isAdmin={isAdmin} systemButtons={systemButtons} theme={theme} preferredModel={preferredModel} activeEngagement={activeEngagement} setActiveEngagement={setActiveEngagement} onNavigate={navigateTo} />}
+        {currentScreen === 'results' && (
+          <div data-dxo="results-page" style={{ display: 'contents' }}>
+            <ResultsScreen setShowModal={setShowModal} clientId={clientId} isAdmin={isAdmin} systemButtons={systemButtons} theme={theme} preferredModel={preferredModel} activeEngagement={activeEngagement} setActiveEngagement={setActiveEngagement} onNavigate={navigateTo} />
+          </div>
+        )}
         {currentScreen === 'skills' && <SkillsScreen clientId={clientId} isAdmin={isAdmin} preferredModel={preferredModel} activeEngagement={activeEngagement} onNavigate={navigateTo} />}
         {currentScreen === 'configuration' && <ConfigurationScreen theme={theme} toggleTheme={toggleTheme} buttons={configButtons} setButtons={saveButtons} systemButtons={systemButtons} setSystemButtons={saveSystemButtons} preferredModel={preferredModel} setPreferredModel={saveModelPreference} clientId={clientId} inWorkspace={inWorkspace} isAdmin={isAdmin} companyName={companyData.name} />}
         {currentScreen === 'branding' && <BrandingScreen clientId={clientId} companyData={companyData} setCompanyData={setCompanyData} />}
@@ -9268,7 +9274,7 @@ function ConfigurationScreen({ theme, toggleTheme, buttons, setButtons, systemBu
           </div>
 
           {/* ── HubSpot Integration ── */}
-          <div className="panel" style={{ marginTop: '1rem' }}>
+          <div className="panel" data-dxo="data-sources" style={{ marginTop: '1rem' }}>
             <div className="panel-header">
               <div className="panel-header-left">
                 <Cloud size={20} className="icon-red" />
@@ -10740,7 +10746,7 @@ function ResultsScreen({ setShowModal, clientId, isAdmin,systemButtons,theme,pre
               {item.id === 'technicalSection' && shouldRenderButton('Rapid Prototype', 'results') && systemButtons && systemButtons.filter(b => (b.label === 'Rapid Prototype' || b.name === 'Rapid Prototype') && !b.hidden).map((btn, bi) => {
                 const BtnIcon = ICON_MAP[btn.icon] || Download
                 return (
-                  <button key={bi} onClick={async (e) => {
+                  <button key={bi} data-dxo="prototype-spec" onClick={async (e) => {
                     e.stopPropagation()
                     setProtoDownloading(true)
                     try {
@@ -10760,7 +10766,7 @@ function ResultsScreen({ setShowModal, clientId, isAdmin,systemButtons,theme,pre
                 )
               })}
               {item.id === 'deploymentBrief' && shouldRenderButton('Download Brief', 'results') && (
-                <button onClick={async (e) => {
+                <button data-dxo="brief-download" onClick={async (e) => {
                   e.stopPropagation()
                   setBriefDownloadLoading(true)
                   try {
@@ -10783,7 +10789,7 @@ function ResultsScreen({ setShowModal, clientId, isAdmin,systemButtons,theme,pre
                 </button>
               )}
               {item.id === 'growthDeck' && shouldRenderButton('Download Deck', 'results') && (
-                <button onClick={async (e) => {
+                <button data-dxo="deck-preview" onClick={async (e) => {
                   e.stopPropagation()
                   setDeckDownloadLoading(true)
                   try {
@@ -11333,7 +11339,7 @@ function ResultsScreen({ setShowModal, clientId, isAdmin,systemButtons,theme,pre
                         <div>
                           {/* Proposed Architecture */}
                           {displayResults.architecture_diagram && (
-                              <div className="panel" style={{marginTop:"20px",marginBottom:"10px"}}>
+                              <div className="panel" data-dxo="architecture-slide" style={{marginTop:"20px",marginBottom:"10px"}}>
                                 <div className="panel-header">
                                   <div className="panel-header-left">
                                     <Package size={20} className="icon-red" />
