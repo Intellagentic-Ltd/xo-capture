@@ -21,6 +21,11 @@
  * Persistence:
  *   localStorage key 'dxo.state' carries { stepIndex, paused, prospectId }
  *   so a page reload mid-demo resumes from the same beat.
+ *
+ * Auth gate:
+ *   Bootstrap polls for the [data-dxo="dashboard-header"] anchor before
+ *   rendering the panel. That anchor is only on the post-auth dashboard,
+ *   so the panel does not appear on welcome / sign-in screens.
  */
 
 (function () {
@@ -816,9 +821,27 @@
   }
 
   // -------------------------------------------------------------------------
+  // Auth gate
+  // -------------------------------------------------------------------------
+  // dxo.js loads unconditionally per index.html, but the panel must not
+  // appear before the user has signed in. The [data-dxo="dashboard-header"]
+  // anchor is rendered on the post-auth dashboard only -- never on welcome /
+  // sign-in screens -- so polling for it is a clean signal that the user is
+  // authenticated. Once detected, bootstrap proceeds; the panel persists for
+  // the rest of the session even when the user navigates to other screens
+  // where the dashboard-header anchor is absent.
+  function isAuthed() {
+    return !!document.querySelector('[data-dxo="dashboard-header"]');
+  }
+
+  // -------------------------------------------------------------------------
   // Bootstrap
   // -------------------------------------------------------------------------
   function bootstrap() {
+    if (!isAuthed()) {
+      setTimeout(bootstrap, 1000);
+      return;
+    }
     buildUI();
     loadScript().then((s) => {
       script = s;
