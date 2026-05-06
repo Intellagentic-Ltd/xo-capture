@@ -1030,14 +1030,19 @@ function DashboardScreen({ onSelectClient, onCreateClient, isAdmin, isAccount, a
 
   return (
     <div style={{ padding: '1.5rem', maxWidth: '100%', overflowX: 'hidden' }}>
-      {/* Row 1: Title + action button */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+      {/* Row 1: Title + action buttons (Run dXO + New Client) */}
+      <div data-dxo="dashboard-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
         <h2 style={{ fontSize: '1.125rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
           {isAccount && !isAdmin ? 'My Clients' : 'All Clients'} <span style={{ fontWeight: 400, color: 'var(--text-muted, #6b7280)', fontSize: '0.8125rem' }}>({filteredClients.length})</span>
         </h2>
-        <button onClick={onCreateClient} className="action-btn red" style={{ flexShrink: 0 }}>
-          <Plus size={14} /> New Client
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+          <a href="?dxo=1" data-dxo="run-dxo" className="action-btn" style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 6 }} title="Self-guided XO Capture demo">
+            <Play size={14} /> Run dXO
+          </a>
+          <button onClick={onCreateClient} className="action-btn red" style={{ flexShrink: 0 }}>
+            <Plus size={14} /> New Client
+          </button>
+        </div>
       </div>
       {/* Row 2: Filters */}
       <div style={{ display: 'flex', gap: 12, marginBottom: '0.875rem', alignItems: 'center' }}>
