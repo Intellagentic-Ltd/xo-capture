@@ -429,13 +429,54 @@
   }
 
   function _synthAndPlay(text, slot, signal) {
-    // Polly path bypassed -- xo-capture's gateway does not expose
-    // /api/dxo/synthesize. Even when fetch returned 200 with an HTML
-    // fallback, parsing as a blob occasionally hung past the user's
-    // patience. Browser TTS only is reliable. Restore Polly when the
-    // gateway gains a synthesise route.
-    if (slot === 'narration') fallbackToBrowserTts(text);
-    if (slot === 'answer') fallbackToBrowserTts(text);
+    const cached = _audioCache.get(text);
+    if (cached) { playAudio(cached, text, slot); return; }
+
+    // xo-capture stores its session JWT under 'xo-token'; the original
+    // MFP build used 'mfp.jwt'. Try both so the same engine works in
+    // either app without forking.
+    const token = localStorage.getItem('xo-token') || localStorage.getItem('mfp.jwt');
+    const headers = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+
+    // Compose a hard timeout with the upstream signal so a hung
+    // /api/dxo/synthesize response can't strand the playback. If the
+    // caller passed an AbortSignal (answer slot does), aborting it
+    // also aborts our fetch.
+    const timeoutCtrl = new AbortController();
+    const timeoutId = setTimeout(() => timeoutCtrl.abort(), 4000);
+    if (signal) {
+      if (signal.aborted) timeoutCtrl.abort();
+      else signal.addEventListener('abort', () => timeoutCtrl.abort(), { once: true });
+    }
+
+    fetch(API_BASE + '/api/dxo/synthesize', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ text, voice: POLLY_VOICE }),
+      signal: timeoutCtrl.signal,
+    })
+      .then(r => { clearTimeout(timeoutId); return r.ok ? r.blob() : null; })
+      .then(blob => {
+        if (!blob || !blob.size) {
+          if (slot === 'narration') fallbackToBrowserTts(text);
+          return;
+        }
+        const url = URL.createObjectURL(blob);
+        _audioCache.set(text, url);
+        playAudio(url, text, slot);
+      })
+      .catch((err) => {
+        clearTimeout(timeoutId);
+        if (err && err.name === 'AbortError') {
+          // User-cancelled or timed out -- fall back so the operator
+          // still hears narration on long Polly calls.
+          if (slot === 'narration') fallbackToBrowserTts(text);
+          return;
+        }
+        console.warn('[dXO] polly synth failed', err);
+        if (slot === 'narration') fallbackToBrowserTts(text);
+      });
   }
 
   function speak(text) {
@@ -755,7 +796,7 @@
     const eventId = m ? m[1] : null;
     const currentStep = (script && script.steps && script.steps[state.stepIndex]) || null;
 
-    const token = localStorage.getItem('mfp.jwt');
+    const token = localStorage.getItem('xo-token') || localStorage.getItem('mfp.jwt');
     const headers = { 'Content-Type': 'application/json' };
     if (token) headers['Authorization'] = 'Bearer ' + token;
 
@@ -816,6 +857,37 @@
   }
 
   // -------------------------------------------------------------------------
+  // Preflight: silent click sequence before the panel renders. Lets the
+  // script land the operator on the right starting screen (eg. Mayo's
+  // Welcome page) without showing transitional steps. Each entry is a
+  // selector accepted by findTarget. Failures are non-fatal -- the panel
+  // still renders so the operator can drive manually.
+  // -------------------------------------------------------------------------
+  function runPreflight(idx, done) {
+    const list = (script && script.meta && script.meta.preflightClicks) || [];
+    if (idx >= list.length) {
+      done();
+      return;
+    }
+    const selector = list[idx];
+    pollForTarget(selector, 4000, (target) => {
+      if (target) {
+        const clickable = findClickableAncestor(target) || target;
+        const opts = { bubbles: true, cancelable: true, view: window, button: 0 };
+        try { clickable.dispatchEvent(new PointerEvent('pointerdown', opts)); } catch (_) {}
+        try { clickable.dispatchEvent(new MouseEvent('mousedown', opts)); } catch (_) {}
+        try { clickable.dispatchEvent(new MouseEvent('mouseup', opts)); } catch (_) {}
+        clickable.dispatchEvent(new MouseEvent('click', opts));
+        console.log('[dXO] preflight clicked', clickable.tagName, (clickable.textContent || '').slice(0, 40));
+      } else {
+        console.warn('[dXO] preflight selector not found', selector);
+      }
+      // Give React a beat to re-render after each click before the next.
+      setTimeout(() => runPreflight(idx + 1, done), 1500);
+    });
+  }
+
+  // -------------------------------------------------------------------------
   // Bootstrap
   // -------------------------------------------------------------------------
   function bootstrap() {
@@ -823,22 +895,28 @@
       setTimeout(bootstrap, 1000);
       return;
     }
-    buildUI();
     loadScript().then((s) => {
       script = s;
       track('script_loaded', { name: s.name, steps: s.steps.length });
-      // Defer first speak until voices are populated (Chrome quirk)
-      if ('speechSynthesis' in window) {
-        if (window.speechSynthesis.getVoices().length === 0) {
-          window.speechSynthesis.addEventListener('voiceschanged', () => renderStep(), { once: true });
+      // Run any preflight clicks silently to land on the starting screen
+      // before the panel appears. Then build the UI and render step 1.
+      runPreflight(0, () => {
+        buildUI();
+        // Defer first speak until voices are populated (Chrome quirk)
+        if ('speechSynthesis' in window) {
+          if (window.speechSynthesis.getVoices().length === 0) {
+            window.speechSynthesis.addEventListener('voiceschanged', () => renderStep(), { once: true });
+          } else {
+            renderStep();
+          }
         } else {
           renderStep();
         }
-      } else {
-        renderStep();
-      }
+      });
     }).catch((err) => {
       console.error('[dXO] failed to load script', err);
+      // Build the UI anyway so the operator sees the failure mode.
+      buildUI();
       document.getElementById('dxo-segment-name').textContent = 'Failed to load demo script';
       document.getElementById('dxo-narration').textContent = String(err);
     });

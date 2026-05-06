@@ -1,7 +1,7 @@
 // =========================================================================
 // XO Capture — dXO demo script
 // =========================================================================
-// v4.7 — Mayo Clinic Welcome page first, four-section spine.
+// v4.8 — silent preflight to Mayo Welcome, no visible nav detour.
 // Visual walkthrough only. Ask-box / query interactions deferred.
 //
 // LOAD ORDER
@@ -12,15 +12,13 @@
 //
 // SCOPE NOTES
 //   - xo-capture holds the active client in React state, not in URL.
-//     Navigation is click-driven: click the demo client row to enter
-//     the workspace, then click Welcome / Results / Enrich /
-//     Configuration sidebar items to switch tabs.
-//   - Demo opens by clicking Mayo Clinic from the All Clients
-//     dashboard, then immediately clicking the Welcome sidebar item
-//     so the operator lands on Mayo's Partner Workspace Welcome page
-//     (Organization Profile + Domain Expertise / Your Data /
-//     Intellagentic Growth panels) before any content highlighting.
-//   - Demo client is "Mayo Clinic" — substitute by editing this file.
+//     The engine processes `meta.preflightClicks` SILENTLY before
+//     showing the panel, dispatching clicks in order so the operator
+//     lands on Mayo's Welcome page before any visible step fires.
+//     If a preflight selector misses, the panel still renders and
+//     step 1 plays from wherever the user actually is.
+//   - Demo client is "Mayo Clinic" — change preflightClicks[0] to
+//     swap to a different client.
 //   - Four content sections are the spine on Results: Problems,
 //     Opportunities, Streamline applications, XO applications.
 //     Selectors:
@@ -29,44 +27,28 @@
 //       * Streamline / XO — `#section-streamline` and `#section-xo`
 //         (existing DOM ids on the collapsible sub-block headers
 //         inside the Solutions section, App.jsx lines 11096 / 11246)
-//   - Sidebar nav items (Welcome, Results, Enrich, Configuration)
-//     targeted via `text:`.
+//   - Sidebar nav items (Results, Enrich, Configuration) targeted
+//     via `text:`.
 //   - prototype-spec.md step removed.
 // =========================================================================
 
 window.DXO_SCRIPT = {
   meta: {
     name: "XO Capture — dXO walkthrough",
-    estimated_duration_minutes: 6.5,
+    estimated_duration_minutes: 6.0,
     demo_client: "Mayo Clinic",
     audience: ["go-to-market", "solutions-engineering"],
-    version: "4.7.0",
-    notes: "v4.7: lands on Mayo Welcome (Partner Workspace), no All Clients detour.",
+    version: "4.8.0",
+    notes: "v4.8: silent preflight clicks land on Mayo Welcome before panel renders.",
+    // Engine processes these in order during bootstrap, before the
+    // panel appears. Each click happens silently with a 1.5s settle
+    // gap. Failures are logged but non-fatal.
+    preflightClicks: ["text:Mayo Clinic", "text:Welcome"],
   },
 
   steps: [
     {
-      id: "step-1-open-mayo",
-      title: "Opening Mayo Clinic",
-      narration:
-        "Mayo Clinic.",
-      duration_seconds: 4,
-      target: "text:Mayo Clinic",
-      click: true,
-      click_delay_ms: 1500,
-    },
-    {
-      id: "step-2-open-welcome",
-      title: "Their Welcome page",
-      narration:
-        "Their Welcome page.",
-      duration_seconds: 4,
-      target: "text:Welcome",
-      click: true,
-      click_delay_ms: 1500,
-    },
-    {
-      id: "step-3-welcome-state",
+      id: "step-1-welcome-state",
       title: "What XO Capture is doing right now",
       narration:
         "Welcome to XO Capture. Before I show you any features, here's the state of the work. Real clients moving through the loop you're about to see — capture, enrich, ship.",
@@ -75,7 +57,7 @@ window.DXO_SCRIPT = {
       scroll: true,
     },
     {
-      id: "step-4-open-results",
+      id: "step-2-open-results",
       title: "The work itself",
       narration:
         "Now the work itself.",
@@ -85,7 +67,7 @@ window.DXO_SCRIPT = {
       click_delay_ms: 1500,
     },
     {
-      id: "step-5-results-page",
+      id: "step-3-results-page",
       title: "The Results page",
       narration:
         "This is the live Results page — the artefact your prospect actually receives. Citation-linked, so every claim traces back to its source document. URL not PDF, so when the corpus updates, the page updates with it. This replaces the deck-and-email loop your AEs run today.",
@@ -94,7 +76,7 @@ window.DXO_SCRIPT = {
       scroll: true,
     },
     {
-      id: "step-6-problems",
+      id: "step-4-problems",
       title: "Problems",
       narration:
         "Start with what's actually in the way. The Problems section surfaces the structural gaps the analysis uncovered, ranked by severity, each linked to the evidence in the corpus. This is the part of the work your prospect already half-knows but hasn't put on a single page.",
@@ -103,7 +85,7 @@ window.DXO_SCRIPT = {
       scroll: true,
     },
     {
-      id: "step-7-opportunities",
+      id: "step-5-opportunities",
       title: "Opportunities",
       narration:
         "Against those problems, the upside. Where the unblocked revenue is. Where the throughput is. Specific opportunities the prospect can act on, framed in their own language — not ours.",
@@ -112,7 +94,7 @@ window.DXO_SCRIPT = {
       scroll: true,
     },
     {
-      id: "step-8-open-solutions",
+      id: "step-6-open-solutions",
       title: "Solutions",
       narration:
         "Now what to do about it.",
@@ -122,7 +104,7 @@ window.DXO_SCRIPT = {
       click_delay_ms: 1500,
     },
     {
-      id: "step-9-streamline",
+      id: "step-7-streamline",
       title: "Streamline applications",
       narration:
         "First the off-the-shelf fits. Streamline applications — products from our portfolio that map directly onto the problems above, deployable in a sprint. No bespoke build, no integration risk, no waiting six months. The cheapest, fastest path to value.",
@@ -133,7 +115,7 @@ window.DXO_SCRIPT = {
       scroll: true,
     },
     {
-      id: "step-10-xo",
+      id: "step-8-xo",
       title: "XO applications",
       narration:
         "Where Streamline doesn't reach, XO does. Bespoke builds, scoped to the exact problems on this page. Each one tied to evidence, each one with a deployment plan, each one buildable in days from the spec we generate. This is where the deal value compounds.",
@@ -144,7 +126,7 @@ window.DXO_SCRIPT = {
       scroll: true,
     },
     {
-      id: "step-11-deck",
+      id: "step-9-deck",
       title: "The deck",
       narration:
         "Same content, repackaged for the format your sponsor still forwards to their CFO. Tied to the same enrichment run, so the deck and the Results page can never drift.",
@@ -153,7 +135,7 @@ window.DXO_SCRIPT = {
       scroll: true,
     },
     {
-      id: "step-12-architecture",
+      id: "step-10-architecture",
       title: "The architecture diagram",
       narration:
         "The slide that decides whether we win the deal. Streamline products on one side, XO bespoke builds on the other, the prospect's existing stack underneath, data flows drawn explicitly. A solutions engineer reads this in thirty seconds and knows whether the proposal is buildable. We don't hand-draw these — XO generates them from the corpus.",
@@ -162,7 +144,7 @@ window.DXO_SCRIPT = {
       scroll: true,
     },
     {
-      id: "step-13-brief",
+      id: "step-11-brief",
       title: "The executive brief",
       narration:
         "Three pages, no jargon — the version their MD reads on the way to a board meeting. Same canonical narrative, compressed.",
@@ -171,7 +153,7 @@ window.DXO_SCRIPT = {
       scroll: true,
     },
     {
-      id: "step-14-open-enrich",
+      id: "step-12-open-enrich",
       title: "Switching to Enrich",
       narration:
         "Now the evidence chain.",
@@ -181,7 +163,7 @@ window.DXO_SCRIPT = {
       click_delay_ms: 1500,
     },
     {
-      id: "step-15-enrichment",
+      id: "step-13-enrichment",
       title: "What's behind the artefacts",
       narration:
         "Three panels worth knowing. Entities — every counterparty, instrument, exposure the prospect touches. Key facts — extracted, deduplicated, ranked, each citation-linked. Anomalies — places where the corpus contradicts itself. Anomalies are usually the most valuable, because that's where your next discovery question comes from. None of this is a black box.",
@@ -190,7 +172,7 @@ window.DXO_SCRIPT = {
       scroll: true,
     },
     {
-      id: "step-16-open-configuration",
+      id: "step-14-open-configuration",
       title: "Switching to Configuration",
       narration:
         "And one more layer beneath that — where the data comes from in the first place.",
@@ -200,7 +182,7 @@ window.DXO_SCRIPT = {
       click_delay_ms: 1500,
     },
     {
-      id: "step-17-data-sources",
+      id: "step-15-data-sources",
       title: "Where the data comes from",
       narration:
         "Two layers. Organisational data — accounts, contacts, deals, ownership — synced from the prospect's CRM. HubSpot here; configurable for Salesforce, Pipedrive, Dynamics, anything with a stable contract. You don't move CRMs to use XO. On top of the CRM spine, the document corpus — call transcripts, internal product docs, policies, recent reports. Every fact in every output above traces back to one of these sources.",
