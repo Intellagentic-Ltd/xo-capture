@@ -106,14 +106,5 @@ window.DXO_SCRIPT = {
       highlight: "[data-dxo='data-sources']",
       scroll: true,
     },
-    {
-      id: "step-9-consequence-engine",
-      title: "Why XO recommended this build",
-      narration:
-        "One last thing. On MFP's recommendation card, this panel — the Consequence Engine trace — shows the prior cases XO's reasoning drew from when it recommended building rather than buying off-the-shelf. Three prior cases, each with timestamps and outcomes. This is the moat. Generic LLM tools retrieve. XO reasons, and shows its work.",
-      duration_seconds: 50,
-      highlight: "[data-dxo='consequence-engine']",
-      scroll: true,
-    },
   ],
 };
