@@ -97,6 +97,7 @@ deploy_lambda "xo-buttons" "buttons"
 deploy_lambda "xo-enrich" "enrich"
 deploy_lambda "xo-gdrive-import" "gdrive"
 deploy_lambda "xo-rapid-prototype" "rapid-prototype"
+deploy_lambda "xo-dxo" "dxo"
 
 echo ""
 echo "✨ Simple Lambda deployment complete!"
