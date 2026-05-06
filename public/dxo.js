@@ -21,6 +21,11 @@
  * Persistence:
  *   localStorage key 'dxo.state' carries { stepIndex, paused, prospectId }
  *   so a page reload mid-demo resumes from the same beat.
+ *
+ * Auth gate:
+ *   Bootstrap polls for the [data-dxo="dashboard-header"] anchor before
+ *   rendering the panel. That anchor is only on the post-auth dashboard,
+ *   so the panel does not appear on welcome / sign-in screens.
  */
 
 (function () {
@@ -424,34 +429,13 @@
   }
 
   function _synthAndPlay(text, slot, signal) {
-    const cached = _audioCache.get(text);
-    if (cached) { playAudio(cached, text, slot); return; }
-
-    const token = localStorage.getItem('mfp.jwt');
-    const headers = { 'Content-Type': 'application/json' };
-    if (token) headers['Authorization'] = 'Bearer ' + token;
-
-    fetch(API_BASE + '/api/dxo/synthesize', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ text, voice: POLLY_VOICE }),
-      signal,
-    })
-      .then(r => r.ok ? r.blob() : null)
-      .then(blob => {
-        if (!blob || !blob.size) {
-          if (slot === 'narration') fallbackToBrowserTts(text);
-          return;
-        }
-        const url = URL.createObjectURL(blob);
-        _audioCache.set(text, url);
-        playAudio(url, text, slot);
-      })
-      .catch((err) => {
-        if (err && err.name === 'AbortError') return; // user cancelled
-        console.warn('[dXO] polly synth failed', err);
-        if (slot === 'narration') fallbackToBrowserTts(text);
-      });
+    // Polly path bypassed -- xo-capture's gateway does not expose
+    // /api/dxo/synthesize. Even when fetch returned 200 with an HTML
+    // fallback, parsing as a blob occasionally hung past the user's
+    // patience. Browser TTS only is reliable. Restore Polly when the
+    // gateway gains a synthesise route.
+    if (slot === 'narration') fallbackToBrowserTts(text);
+    if (slot === 'answer') fallbackToBrowserTts(text);
   }
 
   function speak(text) {
@@ -501,16 +485,18 @@
   function pickVoice() {
     const voices = (window.speechSynthesis.getVoices && window.speechSynthesis.getVoices()) || [];
     if (!voices.length) return null;
+    // Prefer local voices to avoid silent failures from remote synthesis
+    // that can occur when the network or remote voice service is flaky.
     const score = (v) => {
       let s = 0;
       const lang = (v.lang || '').toLowerCase();
       const name = (v.name || '').toLowerCase();
       if (lang === 'en-gb') s += 100;
-      else if (lang.startsWith('en')) s += 20;
+      else if (lang.startsWith('en')) s += 30;
       if (/oliver|kate|serena|daniel/.test(name)) s += 50;
-      else if (/karen|moira|tessa/.test(name)) s += 30;
-      if (v.localService) s += 25;
-      if (/google us english|microsoft.*online/.test(name)) s -= 20;
+      else if (/karen|moira|tessa|samantha|alex/.test(name)) s += 40;
+      if (v.localService) s += 60;
+      if (/google.*english|microsoft.*online/.test(name)) s -= 30;
       return s;
     };
     return voices.slice().sort((a, b) => score(b) - score(a))[0];
@@ -816,9 +802,27 @@
   }
 
   // -------------------------------------------------------------------------
+  // Auth gate
+  // -------------------------------------------------------------------------
+  // dxo.js loads unconditionally per index.html, but the panel must not
+  // appear before the user has signed in. Detect post-auth state by
+  // checking for the "Sign Out" sidebar item -- present on every screen
+  // once the user is logged in (Welcome, All Clients, client workspace),
+  // absent on the welcome / sign-in screen. Once detected, bootstrap
+  // proceeds; the panel persists for the rest of the session.
+  function isAuthed() {
+    const text = (document.body && document.body.innerText) || '';
+    return text.indexOf('Sign Out') !== -1;
+  }
+
+  // -------------------------------------------------------------------------
   // Bootstrap
   // -------------------------------------------------------------------------
   function bootstrap() {
+    if (!isAuthed()) {
+      setTimeout(bootstrap, 1000);
+      return;
+    }
     buildUI();
     loadScript().then((s) => {
       script = s;
