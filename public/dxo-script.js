@@ -1,8 +1,10 @@
 // =========================================================================
 // XO Capture — dXO demo script
 // =========================================================================
-// v4.8 — silent preflight to Mayo Welcome, no visible nav detour.
-// Visual walkthrough only. Ask-box / query interactions deferred.
+// v5.1 — 7 narrated beats in sales-voice. Throughlines: "signal from noise"
+// (Aled Miles' framing) and "rapid deployment". Full tagline lands at close.
+// Helper steps remain silent. Preflight is now VISIBLE (two short clicks)
+// because the engine does not process meta.preflightClicks.
 //
 // LOAD ORDER
 //   This file is loaded unconditionally by index.html. It sets
@@ -11,183 +13,240 @@
 //   so the panel does not appear until the user is signed in.
 //
 // SCOPE NOTES
-//   - xo-capture holds the active client in React state, not in URL.
-//     The engine processes `meta.preflightClicks` SILENTLY before
-//     showing the panel, dispatching clicks in order so the operator
-//     lands on Mayo's Welcome page before any visible step fires.
-//     If a preflight selector misses, the panel still renders and
-//     step 1 plays from wherever the user actually is.
-//   - Demo client is "Mayo Clinic" — change preflightClicks[0] to
-//     swap to a different client.
-//   - Four content sections are the spine on Results: Problems,
-//     Opportunities, Streamline applications, XO applications.
-//     Selectors:
-//       * Problems / Opportunities — `text:` (card titles in the
-//         formattedResults / formattedSummary maps)
-//       * Streamline / XO — `#section-streamline` and `#section-xo`
-//         (existing DOM ids on the collapsible sub-block headers
-//         inside the Solutions section, App.jsx lines 11096 / 11246)
-//   - Sidebar nav items (Results, Enrich, Configuration) targeted
-//     via `text:`.
-//   - prototype-spec.md step removed.
+//   - Demo client is "Mayo Clinic" — change step-pre-mayo to swap.
+//   - Preflight is visible (not silent). Two short clicks land the
+//     operator on Mayo's Welcome page before the narrated walkthrough
+//     begins. v5.0 attempted silent preflight via meta.preflightClicks;
+//     dxo.js doesn't process that field, so v5.1 uses real steps.
+//   - The 7 NARRATED steps (1, 4, 7, 10, 13, 16, 19) correspond directly
+//     to Ken's 7 notes. Other steps are silent helpers (no narration,
+//     short duration, click + scroll as needed).
+//
+// NOTE-TO-STEP MAP
+//   Note 1  -> step-1-welcome           (signal from noise; first -> second meeting)
+//   Note 2  -> step-4-deck              (the deck you'd love to walk in with)
+//   Note 3  -> step-7-streamline-xo     (Streamline + XO; "your competition is guessing")
+//   Note 4  -> step-10-architecture     (architecture; weeks not quarters)
+//   Note 5  -> step-13-enrich           (Intellagentic Engine; signal vs noise)
+//   Note 6  -> step-16-upload           (contextual data, any format)
+//   Note 7  -> step-19-welcome-close    (tagline close)
+//
+// THROUGHLINES
+//   * Signal from noise — Aled Miles' phrase. Lands hook -> engine -> close.
+//   * Rapid deployment — "weeks not quarters". Lands deck -> architecture -> close.
+//   * IntellagenticXO — the end of guesswork — full tagline lands ONCE,
+//     at the very close, as the last words.
 // =========================================================================
-
 window.DXO_SCRIPT = {
   meta: {
-    name: "XO Capture — dXO walkthrough",
-    estimated_duration_minutes: 6.0,
+    name: "XO Capture — dXO walkthrough (v5.1)",
+    estimated_duration_minutes: 2.75,
     demo_client: "Mayo Clinic",
     audience: ["go-to-market", "solutions-engineering"],
-    version: "4.8.0",
-    notes: "v4.8: silent preflight clicks land on Mayo Welcome before panel renders.",
-    // Engine processes these in order during bootstrap, before the
-    // panel appears. Each click happens silently with a 1.5s settle
-    // gap. Failures are logged but non-fatal.
-    preflightClicks: ["text:Mayo Clinic", "text:Welcome"],
+    version: "5.1.0",
+    notes: "v5.1: sales-voice rewrite of the 7 narrated beats. Throughlines: signal from noise (lands hook/engine/close) and rapid deployment (lands deck/architecture/close). Full tagline 'IntellagenticXO — the end of guesswork' lands once, at close. Visible preflight replaces v5.0's silent preflightClicks (engine doesn't support that field). Sum of step durations = 2m12s; estimated wall-clock ~2:30-3:00 with engine overhead.",
   },
-
   steps: [
+    // ── PREFLIGHT (visible, silent) ───────────────────────────────────────
     {
-      id: "step-1-welcome-state",
-      title: "What XO Capture is doing right now",
+      id: "step-pre-mayo",
+      title: "",
+      narration: "",
+      duration_seconds: 2,
+      target: "text:Mayo Clinic",
+      click: true,
+      click_delay_ms: 1200,
+    },
+    {
+      id: "step-pre-welcome",
+      title: "",
+      narration: "",
+      duration_seconds: 2,
+      target: "text:Welcome",
+      click: true,
+      click_delay_ms: 1200,
+    },
+    // ── NOTE 1 ────────────────────────────────────────────────────────────
+    {
+      id: "step-1-welcome",
+      title: "Welcome",
       narration:
-        "Welcome to XO Capture. Before I show you any features, here's the state of the work. Real clients moving through the loop you're about to see — capture, enrich, ship.",
-      duration_seconds: 18,
+        "Every prospect is a mountain of noise. CRM, news, transcripts, LinkedIn. XO Capture pulls the signal out. That's how you turn first meetings into second ones.",
+      duration_seconds: 10,
       target: "text:Domain Expertise",
       scroll: true,
     },
+    // ── helpers: navigate to Results ──────────────────────────────────────
     {
-      id: "step-2-open-results",
-      title: "The work itself",
-      narration:
-        "Now the work itself.",
-      duration_seconds: 4,
+      id: "step-2-nav-results",
+      title: "",
+      narration: "",
+      duration_seconds: 2,
       target: "text:Results",
       click: true,
-      click_delay_ms: 1500,
+      click_delay_ms: 1200,
     },
     {
-      id: "step-3-results-page",
-      title: "The Results page",
-      narration:
-        "This is the live Results page — the artefact your prospect actually receives. Citation-linked, so every claim traces back to its source document. URL not PDF, so when the corpus updates, the page updates with it. This replaces the deck-and-email loop your AEs run today.",
-      duration_seconds: 40,
+      id: "step-3-results-settle",
+      title: "",
+      narration: "",
+      duration_seconds: 2,
       target: "[data-dxo='results-page']",
       scroll: true,
     },
+    // ── NOTE 2 ────────────────────────────────────────────────────────────
     {
-      id: "step-4-problems",
-      title: "Problems",
+      id: "step-4-deck",
+      title: "The deck",
       narration:
-        "Start with what's actually in the way. The Problems section surfaces the structural gaps the analysis uncovered, ranked by severity, each linked to the evidence in the corpus. This is the part of the work your prospect already half-knows but hasn't put on a single page.",
-      duration_seconds: 35,
-      target: "text:Problems Identified",
+        "The deck you'd love to walk in with. Their business, their pain, where you fit — already in slides. Three minutes ago this didn't exist. Now it's yours to send.",
+      duration_seconds: 12,
+      target: "text:Growth Deck",
+      click: true,
+      click_delay_ms: 1500,
       scroll: true,
     },
+    // ── helpers: open Solutions, expand Streamline + XO cards ─────────────
     {
-      id: "step-5-opportunities",
-      title: "Opportunities",
-      narration:
-        "Against those problems, the upside. Where the unblocked revenue is. Where the throughput is. Specific opportunities the prospect can act on, framed in their own language — not ours.",
-      duration_seconds: 30,
-      target: "text:Opportunities List",
-      scroll: true,
-    },
-    {
-      id: "step-6-open-solutions",
-      title: "Solutions",
-      narration:
-        "Now what to do about it.",
-      duration_seconds: 4,
+      id: "step-5-open-solutions",
+      title: "",
+      narration: "",
+      duration_seconds: 2,
       target: "text:Solutions",
       click: true,
-      click_delay_ms: 1500,
+      click_delay_ms: 1200,
     },
     {
-      id: "step-7-streamline",
-      title: "Streamline applications",
-      narration:
-        "First the off-the-shelf fits. Streamline applications — products from our portfolio that map directly onto the problems above, deployable in a sprint. No bespoke build, no integration risk, no waiting six months. The cheapest, fastest path to value.",
-      duration_seconds: 40,
+      id: "step-6-expand-streamline",
+      title: "",
+      narration: "",
+      duration_seconds: 2,
       target: "#section-streamline",
       click: true,
-      click_delay_ms: 1500,
-      scroll: true,
+      click_delay_ms: 1200,
     },
+    // ── NOTE 3 ────────────────────────────────────────────────────────────
     {
-      id: "step-8-xo",
-      title: "XO applications",
+      id: "step-7-streamline-xo",
+      title: "Streamline and XO applications",
       narration:
-        "Where Streamline doesn't reach, XO does. Bespoke builds, scoped to the exact problems on this page. Each one tied to evidence, each one with a deployment plan, each one buildable in days from the spec we generate. This is where the deal value compounds.",
-      duration_seconds: 40,
+        "Streamline runs the work. XO tells you who to call, what they care about, and how to open the conversation. Your competition is still guessing. You're not. That's the edge.",
+      duration_seconds: 14,
       target: "#section-xo",
       click: true,
       click_delay_ms: 1500,
       scroll: true,
     },
+    // ── helpers: get to architecture ──────────────────────────────────────
     {
-      id: "step-9-deck",
-      title: "The deck",
-      narration:
-        "Same content, repackaged for the format your sponsor still forwards to their CFO. Tied to the same enrichment run, so the deck and the Results page can never drift.",
-      duration_seconds: 25,
-      target: "[data-dxo='deck-preview']",
+      id: "step-8-nav-tech",
+      title: "",
+      narration: "",
+      duration_seconds: 2,
+      target: "text:Technical Section",
+      click: true,
+      click_delay_ms: 1200,
+    },
+    {
+      id: "step-9-arch-settle",
+      title: "",
+      narration: "",
+      duration_seconds: 2,
+      target: "[data-dxo='architecture-slide']",
       scroll: true,
     },
+    // ── NOTE 4 ────────────────────────────────────────────────────────────
     {
       id: "step-10-architecture",
       title: "The architecture diagram",
       narration:
-        "The slide that decides whether we win the deal. Streamline products on one side, XO bespoke builds on the other, the prospect's existing stack underneath, data flows drawn explicitly. A solutions engineer reads this in thirty seconds and knows whether the proposal is buildable. We don't hand-draw these — XO generates them from the corpus.",
-      duration_seconds: 45,
+        "You walk in knowing what they run, where the gaps are, and where you fit. Not guesses — the actual map. And from this map to deployed? Weeks, not quarters. That's not luck. That's leverage.",
+      duration_seconds: 14,
       target: "[data-dxo='architecture-slide']",
       scroll: true,
     },
+    // ── helpers: navigate to Enrich, open info modal ──────────────────────
     {
-      id: "step-11-brief",
-      title: "The executive brief",
-      narration:
-        "Three pages, no jargon — the version their MD reads on the way to a board meeting. Same canonical narrative, compressed.",
-      duration_seconds: 25,
-      target: "[data-dxo='brief-download']",
-      scroll: true,
-    },
-    {
-      id: "step-12-open-enrich",
-      title: "Switching to Enrich",
-      narration:
-        "Now the evidence chain.",
-      duration_seconds: 4,
+      id: "step-11-nav-enrich",
+      title: "",
+      narration: "",
+      duration_seconds: 2,
       target: "text:Enrich",
       click: true,
-      click_delay_ms: 1500,
+      click_delay_ms: 1200,
     },
     {
-      id: "step-13-enrichment",
-      title: "What's behind the artefacts",
-      narration:
-        "Three panels worth knowing. Entities — every counterparty, instrument, exposure the prospect touches. Key facts — extracted, deduplicated, ranked, each citation-linked. Anomalies — places where the corpus contradicts itself. Anomalies are usually the most valuable, because that's where your next discovery question comes from. None of this is a black box.",
-      duration_seconds: 45,
+      id: "step-12-enrich-info",
+      title: "",
+      narration: "",
+      duration_seconds: 2,
       target: "[data-dxo='enrichment-results']",
       scroll: true,
     },
+    // ── NOTE 5 ────────────────────────────────────────────────────────────
     {
-      id: "step-14-open-configuration",
-      title: "Switching to Configuration",
+      id: "step-13-enrich",
+      title: "Data Enrichment",
       narration:
-        "And one more layer beneath that — where the data comes from in the first place.",
-      duration_seconds: 4,
-      target: "text:Configuration",
+        "Behind all of it, the Intellagentic Engine. A week of research collapsed into minutes. It reads everything, throws away the noise, and hands you the signal. The unfair advantage you've been wishing for.",
+      duration_seconds: 14,
+      target: "[data-dxo='enrichment-results']",
+      scroll: true,
+    },
+    // ── helpers: navigate to Your Data ────────────────────────────────────
+    {
+      id: "step-14-nav-your-data",
+      title: "",
+      narration: "",
+      duration_seconds: 2,
+      target: "text:Your Data",
       click: true,
-      click_delay_ms: 1500,
+      click_delay_ms: 1200,
     },
     {
-      id: "step-15-data-sources",
-      title: "Where the data comes from",
+      id: "step-15-your-data-settle",
+      title: "",
+      narration: "",
+      duration_seconds: 2,
+      target: "text:Upload",
+      scroll: true,
+    },
+    // ── NOTE 6 ────────────────────────────────────────────────────────────
+    {
+      id: "step-16-upload",
+      title: "Upload",
       narration:
-        "Two layers. Organisational data — accounts, contacts, deals, ownership — synced from the prospect's CRM. HubSpot here; configurable for Salesforce, Pipedrive, Dynamics, anything with a stable contract. You don't move CRMs to use XO. On top of the CRM spine, the document corpus — call transcripts, internal product docs, policies, recent reports. Every fact in every output above traces back to one of these sources.",
-      duration_seconds: 50,
-      target: "[data-dxo='data-sources']",
+        "Anything you've got. Call notes. Transcripts. That LinkedIn deep-dive you did at midnight. The Engine reads all of it. Nothing you've already learned gets wasted.",
+      duration_seconds: 10,
+      target: "text:Upload",
+      scroll: true,
+    },
+    // ── helpers: back to Welcome ──────────────────────────────────────────
+    {
+      id: "step-17-nav-welcome",
+      title: "",
+      narration: "",
+      duration_seconds: 2,
+      target: "text:Welcome",
+      click: true,
+      click_delay_ms: 1200,
+    },
+    {
+      id: "step-18-welcome-settle",
+      title: "",
+      narration: "",
+      duration_seconds: 2,
+      target: "text:Domain Expertise",
+      scroll: true,
+    },
+    // ── NOTE 7 ────────────────────────────────────────────────────────────
+    {
+      id: "step-19-welcome-close",
+      title: "IntellagenticXO — the end of guesswork",
+      narration:
+        "Back to where we started. Pick the prospect. Pick the engagement. Three minutes later you've got the deck, the architecture, the talking points, and the Engine ready to brief you for the call. No more drowning in noise. All signal. And what you sketch with them in the room? Live in weeks, not quarters. That's how you get the second meeting. And the third. IntellagenticXO — the end of guesswork.",
+      duration_seconds: 30,
+      target: "text:Domain Expertise",
       scroll: true,
     },
   ],
