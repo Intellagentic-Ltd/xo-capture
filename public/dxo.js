@@ -439,7 +439,11 @@
     // back to localStorage and the legacy mfp.jwt key so the engine works
     // across both apps and any future storage changes.
     const token = sessionStorage.getItem('xo-token') || localStorage.getItem('xo-token') || localStorage.getItem('mfp.jwt');
-    const headers = { 'Content-Type': 'application/json' };
+    // Accept: audio/mpeg is required for API Gateway to decode the
+    // base64 response body back to raw MP3 bytes. Without it the browser
+    // gets the base64 string verbatim and audio.play() fails with
+    // NotSupportedError.
+    const headers = { 'Content-Type': 'application/json', 'Accept': 'audio/mpeg' };
     if (token) headers['Authorization'] = 'Bearer ' + token;
 
     // Compose a hard timeout with the upstream signal so a hung
