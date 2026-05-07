@@ -435,7 +435,10 @@
     // xo-capture stores its session JWT under 'xo-token'; the original
     // MFP build used 'mfp.jwt'. Try both so the same engine works in
     // either app without forking.
-    const token = localStorage.getItem('xo-token') || localStorage.getItem('mfp.jwt');
+    // xo-capture stores the JWT in sessionStorage (not localStorage); fall
+    // back to localStorage and the legacy mfp.jwt key so the engine works
+    // across both apps and any future storage changes.
+    const token = sessionStorage.getItem('xo-token') || localStorage.getItem('xo-token') || localStorage.getItem('mfp.jwt');
     const headers = { 'Content-Type': 'application/json' };
     if (token) headers['Authorization'] = 'Bearer ' + token;
 
@@ -796,7 +799,10 @@
     const eventId = m ? m[1] : null;
     const currentStep = (script && script.steps && script.steps[state.stepIndex]) || null;
 
-    const token = localStorage.getItem('xo-token') || localStorage.getItem('mfp.jwt');
+    // xo-capture stores the JWT in sessionStorage (not localStorage); fall
+    // back to localStorage and the legacy mfp.jwt key so the engine works
+    // across both apps and any future storage changes.
+    const token = sessionStorage.getItem('xo-token') || localStorage.getItem('xo-token') || localStorage.getItem('mfp.jwt');
     const headers = { 'Content-Type': 'application/json' };
     if (token) headers['Authorization'] = 'Bearer ' + token;
 
