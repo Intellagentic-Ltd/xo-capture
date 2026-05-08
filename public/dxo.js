@@ -396,8 +396,12 @@
     // find_case the page should be read top-down, so we deliberately do
     // NOT yank the viewport to the OODA card -- the operator sees the
     // case header, badges, event context, then scrolls naturally.
+    // v5.2: changed block from 'center' to 'start' so highlighted targets
+    // land at the TOP of the viewport, not centered. Fixes the "lands in
+    // the middle of a page" issue when click-driven nav doesn't trigger
+    // routedThisStep's scroll-to-top.
     if (opts && opts.scroll) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
   }
 
@@ -627,7 +631,9 @@
       currentAudioNarration = null;
     }
 
-    document.getElementById('dxo-segment-name').textContent = step.title || '(untitled step)';
+    // v5.2: empty title means a silent helper step. Show empty rather than
+    // '(untitled step)' so the panel doesn't look broken between narrated beats.
+    document.getElementById('dxo-segment-name').textContent = step.title || '';
     document.getElementById('dxo-narration').textContent = step.narration || '';
     document.getElementById('dxo-progress').textContent =
       `step ${state.stepIndex + 1}/${script.steps.length}`;
@@ -639,17 +645,23 @@
     // Three ways a step can change route: find_case (API lookup -> navigate by
     // real ID), navigate (explicit pathname), or click (highlight -> simulate).
     // Run in priority order; find_case is the most deterministic.
+    // v5.2: scrollToTop:true on a step also forces scroll-to-top, even when
+    // the step uses click-driven navigation (xo-capture is SPA-state, so
+    // clicks don't trigger routedThisStep but the page DOES change visually
+    // and should be read top-down).
     const routedThisStep = !!(step.find_case || step.navigate);
+    const scrollToTopThisStep = !!step.scrollToTop;
     const continueAfterRoute = () => {
-      // After a route change, force the page back to the top so the user
-      // reads the case from its header down. Without this, the highlight's
-      // scrollIntoView lands in the middle of the page.
-      if (routedThisStep) window.scrollTo({ top: 0, behavior: 'auto' });
+      // After a route change OR when the step explicitly asks scrollToTop,
+      // force the page back to the top so the user reads from the header
+      // down. Without this, the highlight's scrollIntoView lands in the
+      // middle of the page (or wherever the operator last scrolled).
+      if (routedThisStep || scrollToTopThisStep) window.scrollTo({ top: 0, behavior: 'auto' });
       pollForTarget(step.target, 4000, (target) => {
-        // Skip the auto-scroll-to-target on routed steps; let the operator
-        // read top-down. On non-routed steps, scroll the highlight into
-        // view since the page hasn't moved.
-        highlight(target, { scroll: !routedThisStep });
+        // Skip the auto-scroll-to-target on routed / scrollToTop steps;
+        // let the operator read top-down. On other steps, scroll the
+        // highlight into view since the page hasn't moved.
+        highlight(target, { scroll: !routedThisStep && !scrollToTopThisStep });
         if (target && step.click && !state.paused) {
           setTimeout(() => {
             const clickable = findClickableAncestor(target) || target;
@@ -690,10 +702,41 @@
     }
 
     track('step_render', { step_index: state.stepIndex, step_id: step.id });
+
+    // v5.2: AUTO-ADVANCE. If the demo is actively playing (not paused, Start tour
+    // already pressed), schedule the next step after duration_seconds. Without
+    // this, the operator must click Next on every step -- including silent
+    // helpers -- which makes a 14-step demo feel like a 14-click slideshow.
+    scheduleAdvance();
+  }
+
+  // v5.2: timer that fires next() automatically when a step's duration elapses.
+  // Cleared by manual next/prev/restart/pause so we never have two pending
+  // advances racing each other.
+  let _advanceTimer = null;
+  function clearAdvanceTimer() {
+    if (_advanceTimer) {
+      clearTimeout(_advanceTimer);
+      _advanceTimer = null;
+    }
+  }
+  function scheduleAdvance() {
+    clearAdvanceTimer();
+    if (!script) return;
+    if (state.paused) return;
+    if (state._neverPlayed) return; // Wait for "Start tour" before auto-running.
+    if (state.stepIndex >= script.steps.length - 1) return; // Last step is terminal.
+    const step = script.steps[state.stepIndex];
+    if (!step || !step.duration_seconds) return;
+    _advanceTimer = setTimeout(() => {
+      _advanceTimer = null;
+      next();
+    }, step.duration_seconds * 1000);
   }
 
   function next() {
     if (!script) return;
+    clearAdvanceTimer();
     if (state.stepIndex < script.steps.length - 1) {
       state.stepIndex += 1;
       saveState();
@@ -709,6 +752,7 @@
   }
 
   function prev() {
+    clearAdvanceTimer();
     if (state.stepIndex > 0) {
       state.stepIndex -= 1;
       saveState();
@@ -721,6 +765,7 @@
     state.paused = !state.paused;
     saveState();
     if (state.paused) {
+      clearAdvanceTimer();
       // Preserve the narration element AND its currentTime so resume can
       // pick up from the same word. Don't null it -- the next togglePause
       // checks for it. Cancel browser-TTS too in case the fallback was
@@ -744,12 +789,16 @@
         // no narration element exists yet.
         speak(step.narration || '');
       }
+      // v5.2: when un-pausing (including the Start tour click), kick off
+      // auto-advance for the current step.
+      scheduleAdvance();
     }
     updatePauseButtonLabel();
     track('pause_toggle', { paused: state.paused });
   }
 
   function restart() {
+    clearAdvanceTimer();
     state.stepIndex = 0;
     state.paused = false;
     state._neverPlayed = false;
