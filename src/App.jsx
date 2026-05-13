@@ -9774,6 +9774,24 @@ function parseDeckWorkflows(md, count) {
   return items.slice(0, count)
 }
 
+// Mirror of backend deriveShortLabel — keep in sync with backend/lambdas/xo-deck-download/index.js
+const DECK_MAX_LABEL_CHARS = 22
+function deriveDeckShortLabel(engagementName, industry) {
+  if (!engagementName) return industry || 'operations'
+  const firstSegment = String(engagementName).split(/\s*[—–:]\s*|\s+-\s+/)[0].trim()
+  if (firstSegment.length <= DECK_MAX_LABEL_CHARS) return firstSegment
+  const words = firstSegment.split(/\s+/)
+  const acc = []
+  let len = 0
+  for (const w of words) {
+    const next = len + (acc.length ? 1 : 0) + w.length
+    if (next > DECK_MAX_LABEL_CHARS) break
+    acc.push(w)
+    len = next
+  }
+  return acc.length > 0 ? acc.join(' ') : firstSegment.slice(0, DECK_MAX_LABEL_CHARS)
+}
+
 function assembleDeckData(results, client, engagementName) {
   if (!results) return null
   const problems = results.problems || results.problems_identified || []
@@ -9784,7 +9802,10 @@ function assembleDeckData(results, client, engagementName) {
 
   const clientName = (client && client.company_name) || results.company_name || 'Client'
   const industry = (client && client.industry) || results.client_industry || 'this domain'
-  const scope = engagementName || industry
+  // `scope` is used adjectivally throughout slides 3-8 and MUST be short.
+  // The full engagementName is only used on slide 1 (cover) where the font auto-shrinks.
+  const explicitShort = (results.engagement_short_label || '').trim()
+  const scope = explicitShort || deriveDeckShortLabel(engagementName, industry)
   const scopeCap = scope.charAt(0).toUpperCase() + scope.slice(1)
   const contactName = (client && client.contact_name) || results.client_contact || clientName
   const bottomLine = results.bottom_line || ''
@@ -9863,12 +9884,12 @@ function assembleDeckData(results, client, engagementName) {
       { phase: 'ACT', desc: truncateDeck(`Bounded execution via Streamline \u2014 ${contactName}'s ${scope} team authorises; system executes. Full audit trail.`, 150) },
     ],
     maturityStart: `${shortName} starts at L1. You pull us forward as confidence builds.`,
-    workflowTitle: engagementName ? `${engagementName} Workflows That Encode Institutional Knowledge` : 'Workflows That Encode Institutional Knowledge',
+    workflowTitle: (engagementName || explicitShort) ? `${scopeCap} Workflows That Encode Institutional Knowledge` : 'Workflows That Encode Institutional Knowledge',
     workflows: workflowData,
-    beforeAfterTitle: engagementName ? `${engagementName}: From System of Record to System of Action` : 'From System of Record to System of Action',
+    beforeAfterTitle: (engagementName || explicitShort) ? `${scopeCap}: From System of Record to System of Action` : 'From System of Record to System of Action',
     comparisons: comparisons.slice(0, 6),
     impactLine: `Estimated ${problems.length > 3 ? '60' : '40'}% reduction in manual ${scope} operations as ${clientName} scales toward full deployment`,
-    pocTitle: engagementName ? `21-Day ${engagementName} Proof of Concept` : '21-Day Proof of Concept',
+    pocTitle: (engagementName || explicitShort) ? `21-Day ${scopeCap} Proof of Concept` : '21-Day Proof of Concept',
     phases,
     nextSteps: [
       { num: '1', text: firstAction || `Share ${scope} operational data and system access for knowledge extraction` },
@@ -9877,7 +9898,8 @@ function assembleDeckData(results, client, engagementName) {
     ],
     successMetric: bottomLine ? truncateDeck(firstDeckSentence(bottomLine, 100), 100) + ' Institutional knowledge encoded into protocol, not people.' : 'Key-person dependency resolved. Institutional knowledge encoded into protocol, not people.',
     constitutionalSafetyTitle: `Constitutional Safety \u2014 Why This Matters for ${shortName}'s ${scopeCap} Operations`,
-    constitutionalSafetyNote: `In ${scope}, a single unchecked decision can cascade into compliance failures, financial exposure, and reputational damage. XO's Two-Brain architecture (Actor + Critic), designed by Dr. Mabrouka Abuhmida, ensures every output is bounded by ${clientName}'s own domain rules \u2014 not advisory guidelines, but hard constitutional constraints with full audit trails.`,
+    constitutionalSafetyNote: `Within ${clientName}'s ${scope.toLowerCase()} workstream, a single unchecked decision can cascade into compliance failures, financial exposure, and reputational damage. XO's Two-Brain architecture (Actor + Critic), designed by Dr. Mabrouka Abuhmida, ensures every output is bounded by ${clientName}'s own domain rules \u2014 not advisory guidelines, but hard constitutional constraints with full audit trails.`,
+    shortLabel: scope,
   }
 }
 
@@ -11791,7 +11813,7 @@ function ResultsScreen({ setShowModal, clientId, isAdmin,systemButtons,theme,pre
                               {/* Slide 4: OODA Loop */}
                               <div style={{ background: '#fff', borderRadius: 12, padding: '1.5rem', marginBottom: '1rem', border: '1px solid #e5e7eb' }}>
                                 <div style={{ fontSize: '0.7rem', color: '#9ca3af', marginBottom: '0.75rem', letterSpacing: '0.05em' }}>SLIDE 4 OF 8</div>
-                                <div style={{ fontSize: '1.25rem', fontWeight: 700, color: '#1B2A4A', marginBottom: '1rem', fontFamily: 'Georgia, serif' }}>The XO Command Loop for {deck.oodaTitle}{activeEngagement?.name ? ` \u2014 ${activeEngagement.name}` : ''}</div>
+                                <div style={{ fontSize: '1.25rem', fontWeight: 700, color: '#1B2A4A', marginBottom: '1rem', fontFamily: 'Georgia, serif' }}>The XO Command Loop for {deck.oodaTitle}{deck.shortLabel && deck.shortLabel !== 'this domain' ? ` \u2014 ${deck.shortLabel}` : ''}</div>
                                 {deck.oodaPhases.map((o, i) => {
                                   const colors = { OBSERVE: '#2E75B6', ORIENT: '#1B2A4A', DECIDE: '#C0392B', ACT: '#27AE60' }
                                   return (
