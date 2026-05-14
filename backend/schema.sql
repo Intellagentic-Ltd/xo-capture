@@ -364,6 +364,34 @@ CREATE TABLE IF NOT EXISTS client_integrations (
 );
 
 -- ============================================================
+-- SALESFORCE SYNC (PR 2 / Stage 1a) — per-record tracking + sync log
+-- Owned by backend/lambdas/salesforce-sync/lambda_function.py
+-- (_run_salesforce_migrations runs these idempotently at cold start).
+-- ============================================================
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS salesforce_account_id VARCHAR(18);
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS salesforce_last_sync TIMESTAMP WITH TIME ZONE;
+ALTER TABLE engagements ADD COLUMN IF NOT EXISTS salesforce_task_id VARCHAR(18);
+ALTER TABLE engagements ADD COLUMN IF NOT EXISTS salesforce_synced_at TIMESTAMP WITH TIME ZONE;
+CREATE INDEX IF NOT EXISTS idx_clients_sf_account ON clients(salesforce_account_id);
+
+-- Sync log — one row per push/pull action. account_id-scoped so each
+-- tenant only sees its own activity (cross-checked at the lambda layer).
+CREATE TABLE IF NOT EXISTS salesforce_sync_log (
+    id SERIAL PRIMARY KEY,
+    account_id INTEGER REFERENCES accounts(id) ON DELETE CASCADE,
+    record_type VARCHAR(20) NOT NULL,    -- 'client' | 'engagement' | 'contact' (PR 3)
+    record_id UUID,
+    salesforce_id VARCHAR(18),
+    sync_direction VARCHAR(10) NOT NULL, -- 'push' | 'pull'
+    fields_updated TEXT,                  -- JSON array of field names
+    fields_skipped TEXT,
+    details TEXT,
+    synced_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_sf_sync_log_account ON salesforce_sync_log(account_id);
+CREATE INDEX IF NOT EXISTS idx_sf_sync_log_record ON salesforce_sync_log(record_type, record_id);
+
+-- ============================================================
 -- GitHub #50 — uploads.status predicate alignment.
 -- Backfill any pre-existing NULLs (production probe confirmed zero rows
 -- as of 2026-04-26, but the UPDATE is idempotent and locks intent in
