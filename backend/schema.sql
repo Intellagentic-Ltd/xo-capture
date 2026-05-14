@@ -302,6 +302,68 @@ CREATE INDEX IF NOT EXISTS idx_document_analyses_upload_id
 ALTER TABLE enrichments ADD COLUMN IF NOT EXISTS error_message TEXT;
 
 -- ============================================================
+-- SALESFORCE + GONG INTEGRATIONS — Stage 0 infrastructure
+-- Multi-tenant credential storage, OAuth CSRF protection, and per-client
+-- connection overrides for the partner model (e.g. Zak's multi-org case).
+--
+-- HUBSPOT ASYMMETRY (intentional): HubSpot is the only integration that
+-- writes NULL account_id rows in system_config — Intellagentic is the sole
+-- HubSpot account. hubspot-sync/_get_config / _set_config continue to read
+-- and write unscoped (NULL) rows. Do NOT backfill HubSpot rows to an
+-- Intellagentic account_id — it will break the production HubSpot sync.
+-- Salesforce and Gong route through shared/integrations_config.py and
+-- require non-NULL account_id.
+-- ============================================================
+ALTER TABLE system_config ADD COLUMN IF NOT EXISTS account_id
+    INTEGER REFERENCES accounts(id) ON DELETE CASCADE;
+-- Replace legacy global UNIQUE(config_key) with per-account scoping.
+-- NULLS NOT DISTINCT keeps HubSpot's single NULL row unique while letting
+-- per-account Salesforce/Gong rows coexist under the same config_key.
+ALTER TABLE system_config DROP CONSTRAINT IF EXISTS system_config_config_key_key;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_system_config_account_key
+    ON system_config (account_id, config_key) NULLS NOT DISTINCT;
+
+-- OAuth state CSRF defense. Single-use, 10 min TTL (enterprise SSO + MFA
+-- can exceed 5 min). Cleanup is opportunistic on each /connect.
+CREATE TABLE IF NOT EXISTS oauth_state_nonces (
+    nonce TEXT PRIMARY KEY,
+    account_id INTEGER REFERENCES accounts(id) ON DELETE CASCADE,
+    client_id UUID REFERENCES clients(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    integration TEXT NOT NULL CHECK (integration IN ('salesforce', 'gong')),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_oauth_nonces_expires
+    ON oauth_state_nonces(expires_at);
+
+-- Per-client connection overrides (partner model). NULL columns mean
+-- "inherit from account-level system_config" — the team model is the
+-- degenerate case where no row exists or all columns are NULL.
+-- connected_by uses ON DELETE SET NULL so the audit pointer never blocks
+-- a user deletion and the integration row survives.
+CREATE TABLE IF NOT EXISTS client_integrations (
+    client_id UUID PRIMARY KEY REFERENCES clients(id) ON DELETE CASCADE,
+
+    salesforce_instance_url TEXT,
+    salesforce_access_token_encrypted TEXT,
+    salesforce_refresh_token_encrypted TEXT,
+    salesforce_token_expiry TIMESTAMP WITH TIME ZONE,
+    salesforce_connected_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    salesforce_connected_at TIMESTAMP WITH TIME ZONE,
+
+    gong_workspace_id TEXT,
+    gong_access_key_encrypted TEXT,
+    gong_access_key_secret_encrypted TEXT,
+    gong_webhook_secret_encrypted TEXT,
+    gong_connected_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    gong_connected_at TIMESTAMP WITH TIME ZONE,
+
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- ============================================================
 -- GitHub #50 — uploads.status predicate alignment.
 -- Backfill any pre-existing NULLs (production probe confirmed zero rows
 -- as of 2026-04-26, but the UPDATE is idempotent and locks intent in
