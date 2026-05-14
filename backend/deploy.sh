@@ -43,8 +43,9 @@ deploy_lambda() {
     # Copy shared helpers into package
     cp ../shared/auth_helper.py .
     cp ../shared/crypto_helper.py .
+    cp ../shared/integrations_config.py .
 
-    zip -q -r function.zip lambda_function.py auth_helper.py crypto_helper.py
+    zip -q -r function.zip lambda_function.py auth_helper.py crypto_helper.py integrations_config.py
 
     if aws lambda get-function --function-name $FUNC_NAME --region $REGION 2>/dev/null; then
         echo "   Updating existing function..."
@@ -83,7 +84,7 @@ deploy_lambda() {
     fi
 
     # Clean up
-    rm -f function.zip auth_helper.py crypto_helper.py
+    rm -f function.zip auth_helper.py crypto_helper.py integrations_config.py
     cd ../..
     echo "   ✅ $FUNC_NAME deployed"
 }
