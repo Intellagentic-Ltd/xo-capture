@@ -17,9 +17,13 @@ pip3 install -r requirements.txt -t package/ --quiet \
   --python-version 3.11 \
   --only-binary=:all:
 
-# Copy Lambda function and shared helpers
-# (auth_helper + crypto_helper + integrations_config — the SF lambda imports all three)
+# Copy Lambda function, SF-local modules, and shared helpers.
+# SF-local: sf_client (HTTP/token), sf_pull (pull path), sf_webhook (Outbound Message).
+# Shared:   auth_helper, crypto_helper, integrations_config.
 cp lambda_function.py package/
+cp sf_client.py package/
+cp sf_pull.py package/
+cp sf_webhook.py package/
 cp ../shared/auth_helper.py package/
 cp ../shared/crypto_helper.py package/
 cp ../shared/integrations_config.py package/
