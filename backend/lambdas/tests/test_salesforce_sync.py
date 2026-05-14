@@ -69,8 +69,12 @@ def salesforce_module():
             mock_conn.cursor.return_value = mock_cur
             mock_connect.return_value = mock_conn
 
-            if 'lambda_function' in sys.modules:
-                del sys.modules['lambda_function']
+            # PR 3: env-dependent constants (SALESFORCE_CLIENT_ID etc) live
+            # in sf_client and freeze at import time. Evict the SF-local
+            # modules so they re-read os.environ inside this patch context.
+            for mod in ('lambda_function', 'sf_client', 'sf_pull', 'sf_webhook'):
+                if mod in sys.modules:
+                    del sys.modules[mod]
             sf_dir = os.path.join(os.path.dirname(__file__), '..', 'salesforce-sync')
             sys.path.insert(0, sf_dir)
             try:
@@ -79,8 +83,9 @@ def salesforce_module():
                 yield lambda_function
             finally:
                 sys.path.remove(sf_dir)
-                if 'lambda_function' in sys.modules:
-                    del sys.modules['lambda_function']
+                for mod in ('lambda_function', 'sf_client', 'sf_pull', 'sf_webhook'):
+                    if mod in sys.modules:
+                        del sys.modules[mod]
 
 
 @pytest.fixture
@@ -92,14 +97,18 @@ def mock_deps():
     mock_cur.fetchone.return_value = None
     mock_cur.fetchall.return_value = []
 
+    # PR 3 refactor: SF HTTP/token helpers live in sf_client.py. Patch
+    # `sf_client.requests` for HTTP, `sf_client.set_account_config` /
+    # `sf_client.get_account_config` for token storage. `lambda_function`
+    # still owns auth/route plumbing and re-exports symbols from sf_client.
     patches = {
         'get_db_connection': patch('lambda_function.get_db_connection', return_value=mock_conn),
         'require_auth': patch('lambda_function.require_auth'),
-        'requests': patch('lambda_function.requests'),
+        'requests': patch('sf_client.requests'),
         'create_oauth_nonce': patch('lambda_function.create_oauth_nonce'),
         'consume_oauth_nonce': patch('lambda_function.consume_oauth_nonce'),
-        'set_account_config': patch('lambda_function.set_account_config'),
-        'get_account_config': patch('lambda_function.get_account_config'),
+        'set_account_config': patch('sf_client.set_account_config'),
+        'get_account_config': patch('sf_client.get_account_config'),
         'delete_account_config': patch('lambda_function.delete_account_config'),
     }
     started = {k: p.start() for k, p in patches.items()}
@@ -493,7 +502,10 @@ class TestTokenRefresh:
         }
         started['requests'].post.return_value = refresh_resp
 
-        status, body = salesforce_module._sf_call_with_refresh(
+        # PR 3: sf_call_with_refresh now lives in sf_client.py; import + call
+        # there so the patches on sf_client.requests / set_account_config apply.
+        import sf_client
+        status, body = sf_client.sf_call_with_refresh(
             mock_conn, 42, tokens, 'GET', '/query/', params={'q': 'SELECT Id FROM Account'},
         )
 

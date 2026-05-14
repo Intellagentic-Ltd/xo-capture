@@ -25,32 +25,28 @@ CONFIG_KEY NAMESPACE (from PR 1 contract):
   separate `hubspot_*` / account_id IS NULL row in the same table.
 """
 
-import os
 import json
 import logging
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 
-import requests
-
 from auth_helper import (
     require_auth, get_db_connection, log_activity, CORS_HEADERS,
 )
 from integrations_config import (
-    set_account_config, get_account_config, delete_account_config,
+    delete_account_config,
     create_oauth_nonce, consume_oauth_nonce,
 )
+from sf_client import (
+    SALESFORCE_CLIENT_ID, SALESFORCE_REDIRECT_URI, SALESFORCE_LOGIN_URL,
+    soql_escape, sf_call_with_refresh, exchange_code_for_tokens,
+    read_account_tokens, write_account_tokens,
+)
+from sf_pull import pull_accounts
+from sf_webhook import handle_outbound_message
 
 logger = logging.getLogger('xo.salesforce')
 logger.setLevel(logging.INFO)
-
-# ── Environment ──
-SALESFORCE_CLIENT_ID = os.environ.get('SALESFORCE_CLIENT_ID', '')
-SALESFORCE_CLIENT_SECRET = os.environ.get('SALESFORCE_CLIENT_SECRET', '')
-SALESFORCE_REDIRECT_URI = os.environ.get('SALESFORCE_REDIRECT_URI', '')
-# https://login.salesforce.com for production; https://test.salesforce.com for sandbox.
-SALESFORCE_LOGIN_URL = os.environ.get('SALESFORCE_LOGIN_URL', 'https://login.salesforce.com')
-SF_API_VERSION = os.environ.get('SALESFORCE_API_VERSION', 'v59.0')
 
 
 # ──────────────────────────────────────────────
@@ -152,133 +148,9 @@ def _require_account_id(user):
 
 
 # ──────────────────────────────────────────────
-# Salesforce HTTP
-# ──────────────────────────────────────────────
-def _salesforce_request(method, instance_url, path, access_token, json_body=None, params=None):
-    """Single SF REST call. Returns (status_code, body_dict)."""
-    url = f"{instance_url}/services/data/{SF_API_VERSION}{path}"
-    headers = {
-        'Authorization': f'Bearer {access_token}',
-        'Content-Type': 'application/json',
-    }
-    resp = requests.request(method, url, headers=headers, json=json_body,
-                            params=params, timeout=30)
-    try:
-        body = resp.json()
-    except ValueError:
-        body = {'_raw': resp.text}
-    return resp.status_code, body
-
-
-def _exchange_code_for_tokens(code):
-    """OAuth authorization_code grant. Returns (status, body)."""
-    resp = requests.post(
-        f"{SALESFORCE_LOGIN_URL}/services/oauth2/token",
-        data={
-            'grant_type': 'authorization_code',
-            'code': code,
-            'client_id': SALESFORCE_CLIENT_ID,
-            'client_secret': SALESFORCE_CLIENT_SECRET,
-            'redirect_uri': SALESFORCE_REDIRECT_URI,
-        },
-        timeout=30,
-    )
-    try:
-        body = resp.json()
-    except ValueError:
-        body = {'error': 'invalid_response', '_raw': resp.text}
-    return resp.status_code, body
-
-
-def _refresh_access_token(refresh_token):
-    """OAuth refresh_token grant. Returns (status, body)."""
-    resp = requests.post(
-        f"{SALESFORCE_LOGIN_URL}/services/oauth2/token",
-        data={
-            'grant_type': 'refresh_token',
-            'refresh_token': refresh_token,
-            'client_id': SALESFORCE_CLIENT_ID,
-            'client_secret': SALESFORCE_CLIENT_SECRET,
-        },
-        timeout=30,
-    )
-    try:
-        body = resp.json()
-    except ValueError:
-        body = {'error': 'invalid_response', '_raw': resp.text}
-    return resp.status_code, body
-
-
-def _read_account_tokens(conn, account_id):
-    """Read decrypted SF tokens for account_id. Returns dict or None if not connected.
-
-    Always uses account_id from JWT — never trusts client-supplied values.
-    """
-    access = get_account_config(conn, account_id, 'salesforce_access_token')
-    refresh = get_account_config(conn, account_id, 'salesforce_refresh_token')
-    instance_url = get_account_config(conn, account_id, 'salesforce_instance_url')
-    if not (access and refresh and instance_url):
-        return None
-    return {
-        'access_token': access,
-        'refresh_token': refresh,
-        'instance_url': instance_url,
-    }
-
-
-def _write_account_tokens(conn, account_id, access, refresh, instance_url):
-    """Persist tokens via integrations_config (master-key encrypted)."""
-    set_account_config(conn, account_id, 'salesforce_access_token', access)
-    if refresh:
-        set_account_config(conn, account_id, 'salesforce_refresh_token', refresh)
-    set_account_config(conn, account_id, 'salesforce_instance_url', instance_url)
-
-
-def _sf_call_with_refresh(conn, account_id, tokens, method, path,
-                          json_body=None, params=None):
-    """Call SF API; on 401 INVALID_SESSION_ID, refresh once and retry.
-
-    SF session timeouts are org-configurable (15 min to 8 hours), so we
-    react to 401 rather than tracking expiry. tokens dict is mutated in
-    place when refresh succeeds so callers see the new access_token.
-    """
-    status, body = _salesforce_request(
-        method, tokens['instance_url'], path, tokens['access_token'],
-        json_body=json_body, params=params,
-    )
-    if status != 401:
-        return status, body
-
-    # Refresh
-    rstatus, rbody = _refresh_access_token(tokens['refresh_token'])
-    if rstatus != 200 or 'access_token' not in rbody:
-        logger.warning("SF token refresh failed: status=%s body=%s", rstatus, rbody)
-        return status, body  # surface original 401
-
-    tokens['access_token'] = rbody['access_token']
-    if rbody.get('instance_url'):
-        tokens['instance_url'] = rbody['instance_url']
-    _write_account_tokens(
-        conn, account_id, tokens['access_token'], None, tokens['instance_url']
-    )
-
-    # Retry once with the new token
-    return _salesforce_request(
-        method, tokens['instance_url'], path, tokens['access_token'],
-        json_body=json_body, params=params,
-    )
-
-
-# ──────────────────────────────────────────────
 # Push helpers — standard fields only (no custom fields in PR 2)
+# SF HTTP / token / refresh helpers now live in sf_client.py.
 # ──────────────────────────────────────────────
-def _soql_escape(s):
-    """Escape single quotes and backslashes for SOQL string literals."""
-    if s is None:
-        return ''
-    return s.replace('\\', '\\\\').replace("'", "\\'")
-
-
 def _build_account_description(client):
     """Compose XO summary text for Account.Description.
     Standard text field, ~32K chars cap on most SF orgs."""
@@ -312,8 +184,8 @@ def _build_account_props(client):
 
 def _find_account_by_name(conn, account_id, tokens, name):
     """SOQL exact-name lookup. Returns SF Account Id or None."""
-    q = f"SELECT Id FROM Account WHERE Name = '{_soql_escape(name)}' LIMIT 1"
-    status, body = _sf_call_with_refresh(
+    q = f"SELECT Id FROM Account WHERE Name = '{soql_escape(name)}' LIMIT 1"
+    status, body = sf_call_with_refresh(
         conn, account_id, tokens, 'GET', '/query/', params={'q': q}
     )
     if status != 200:
@@ -326,14 +198,14 @@ def _create_or_update_account(conn, account_id, tokens, client, existing_sf_id):
     """POST a new Account or PATCH an existing one. Returns SF Account Id."""
     props = _build_account_props(client)
     if existing_sf_id:
-        status, body = _sf_call_with_refresh(
+        status, body = sf_call_with_refresh(
             conn, account_id, tokens, 'PATCH',
             f'/sobjects/Account/{existing_sf_id}', json_body=props,
         )
         if status in (200, 204):
             return existing_sf_id
         raise RuntimeError(f"SF Account PATCH failed: status={status} body={body}")
-    status, body = _sf_call_with_refresh(
+    status, body = sf_call_with_refresh(
         conn, account_id, tokens, 'POST', '/sobjects/Account/', json_body=props,
     )
     if status in (200, 201) and body.get('id'):
@@ -350,7 +222,7 @@ def _create_task(conn, account_id, tokens, what_id, subject, description):
         'Status': 'Completed',
         'ActivityDate': datetime.now(timezone.utc).date().isoformat(),
     }
-    status, body = _sf_call_with_refresh(
+    status, body = sf_call_with_refresh(
         conn, account_id, tokens, 'POST', '/sobjects/Task/', json_body=props,
     )
     if status in (200, 201) and body.get('id'):
@@ -446,7 +318,7 @@ def handle_callback(event):
             )
         account_id = consumed['account_id']
 
-        status, body = _exchange_code_for_tokens(code)
+        status, body = exchange_code_for_tokens(code)
         if status != 200:
             logger.error("SF token exchange failed: status=%s body=%s", status, body)
             return _err(400, f"Salesforce token exchange failed: {body.get('error', 'unknown')}")
@@ -458,7 +330,7 @@ def handle_callback(event):
             return _err(400, "Salesforce did not return expected tokens "
                              "(missing access_token / refresh_token / instance_url)")
 
-        _write_account_tokens(conn, account_id, access, refresh, instance_url)
+        write_account_tokens(conn, account_id, access, refresh, instance_url)
     finally:
         conn.close()
 
@@ -486,14 +358,14 @@ def handle_status(event, user):
 
     conn = get_db_connection()
     try:
-        tokens = _read_account_tokens(conn, account_id)
+        tokens = read_account_tokens(conn, account_id)
         if not tokens:
             return _ok({'connected': False, 'instance_url': None, 'error': None})
 
         connected = True
         error_msg = None
         try:
-            status, body = _sf_call_with_refresh(
+            status, body = sf_call_with_refresh(
                 conn, account_id, tokens, 'GET', '/limits/'
             )
             if status != 200:
@@ -584,7 +456,7 @@ def handle_sync_push(event, user):
         if not user.get('is_admin') and client['account_id'] != account_id:
             return _err(403, "Client does not belong to your account")
 
-        tokens = _read_account_tokens(conn, account_id)
+        tokens = read_account_tokens(conn, account_id)
         if not tokens:
             return _err(412, "Salesforce not connected for this account. "
                              "Call POST /salesforce/connect first.")
@@ -670,6 +542,34 @@ def handle_sync_push(event, user):
         conn.close()
 
 
+def handle_sync_pull(event, user):
+    """POST /salesforce/sync/pull — pull Account changes since last sync.
+
+    Team model only in PR 3. account_id is sourced from JWT — body is
+    ignored except for forward-compatibility (PR 3.5 may add per-entity
+    selection).
+
+    PR 3 scope intentionally limited to Account. Contact and Opportunity
+    follow the same pattern (SOQL query + reconcile loop + per-entity
+    timestamp via integrations_config) and will ship in a follow-up PR.
+    """
+    account_id, err = _require_account_id(user)
+    if err:
+        return err
+
+    conn = get_db_connection()
+    try:
+        tokens = read_account_tokens(conn, account_id)
+        if not tokens:
+            return _err(412, "Salesforce not connected for this account. "
+                             "Call POST /salesforce/connect first.")
+
+        summary = pull_accounts(conn, account_id, tokens)
+        return _ok({'pulled': True, 'summary': summary})
+    finally:
+        conn.close()
+
+
 # ──────────────────────────────────────────────
 # Lambda handler / router
 # ──────────────────────────────────────────────
@@ -684,6 +584,16 @@ def lambda_handler(event, context):
     # Authentication is via single-use nonce inside handle_callback.
     if '/salesforce/callback' in path and method == 'GET':
         response = handle_callback(event)
+        log_activity(event, response)
+        return response
+
+    # Outbound Message webhook — no JWT (no shared secret from Salesforce).
+    # Auth is via OrganizationId verification inside handle_outbound_message:
+    # URL ?account_id=X plus SOAP <OrganizationId> must both resolve to the
+    # same stored salesforce_org_id. Always returns 200 + SOAP ACK envelope
+    # (Ack=true on success, Ack=false on rejection — SF stops retrying).
+    if '/webhooks/salesforce/outbound-message' in path and method == 'POST':
+        response = handle_outbound_message(event, get_db_connection)
         log_activity(event, response)
         return response
 
@@ -707,4 +617,6 @@ def _route_salesforce(event, user, path, method):
         return handle_disconnect(event, user)
     if '/salesforce/sync/push' in path and method == 'POST':
         return handle_sync_push(event, user)
+    if '/salesforce/sync/pull' in path and method == 'POST':
+        return handle_sync_pull(event, user)
     return _err(404, f"No route for {method} {path}")
