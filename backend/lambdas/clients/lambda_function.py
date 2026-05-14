@@ -271,6 +271,96 @@ def _run_system_config_migration():
 _run_system_config_migration()
 
 
+# ── Auto-migration: integrations infrastructure ──
+# Adds the schema required by Salesforce and Gong integrations:
+#   1. system_config.account_id  — multi-tenant scoping for new integrations
+#   2. oauth_state_nonces        — CSRF defense for OAuth /connect → /callback
+#   3. client_integrations       — partner-model per-client connection overrides
+#
+# IMPORTANT — HUBSPOT ASYMMETRY:
+# HubSpot is intentionally global (account_id IS NULL). hubspot-sync's
+# _get_config / _set_config (hubspot-sync/lambda_function.py:177-198) read and
+# write without account scoping. Do NOT "fix" this by backfilling HubSpot rows
+# to an Intellagentic account_id — it will break the production HubSpot sync.
+# Salesforce and Gong route through shared/integrations_config.py instead,
+# which requires a non-NULL account_id.
+def _run_integrations_migration():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        # 1. system_config: add account_id scoping.
+        cur.execute(
+            "ALTER TABLE system_config ADD COLUMN IF NOT EXISTS account_id "
+            "INTEGER REFERENCES accounts(id) ON DELETE CASCADE"
+        )
+        # Drop the legacy global UNIQUE(config_key) — replaced with the
+        # account-scoped index below. NULLS NOT DISTINCT keeps HubSpot's
+        # single NULL-scoped row unique without resorting to COALESCE tricks.
+        cur.execute(
+            "ALTER TABLE system_config "
+            "DROP CONSTRAINT IF EXISTS system_config_config_key_key"
+        )
+        cur.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_system_config_account_key "
+            "ON system_config (account_id, config_key) NULLS NOT DISTINCT"
+        )
+
+        # 2. oauth_state_nonces: short-lived single-use CSRF tokens.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS oauth_state_nonces (
+                nonce TEXT PRIMARY KEY,
+                account_id INTEGER REFERENCES accounts(id) ON DELETE CASCADE,
+                client_id UUID REFERENCES clients(id) ON DELETE CASCADE,
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                integration TEXT NOT NULL CHECK (integration IN ('salesforce', 'gong')),
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                expires_at TIMESTAMP WITH TIME ZONE NOT NULL
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_oauth_nonces_expires "
+            "ON oauth_state_nonces(expires_at)"
+        )
+
+        # 3. client_integrations: per-client connection overrides (partner model).
+        # connected_by uses ON DELETE SET NULL — audit pointer must not block
+        # user deletion, and the integration row must survive a user delete.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS client_integrations (
+                client_id UUID PRIMARY KEY REFERENCES clients(id) ON DELETE CASCADE,
+
+                salesforce_instance_url TEXT,
+                salesforce_access_token_encrypted TEXT,
+                salesforce_refresh_token_encrypted TEXT,
+                salesforce_token_expiry TIMESTAMP WITH TIME ZONE,
+                salesforce_connected_by UUID REFERENCES users(id) ON DELETE SET NULL,
+                salesforce_connected_at TIMESTAMP WITH TIME ZONE,
+
+                gong_workspace_id TEXT,
+                gong_access_key_encrypted TEXT,
+                gong_access_key_secret_encrypted TEXT,
+                gong_webhook_secret_encrypted TEXT,
+                gong_connected_by UUID REFERENCES users(id) ON DELETE SET NULL,
+                gong_connected_at TIMESTAMP WITH TIME ZONE,
+
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+        """)
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("Integrations migration complete: system_config.account_id + "
+              "oauth_state_nonces + client_integrations ensured")
+    except Exception as e:
+        print(f"Integrations migration check (non-fatal): {e}")
+
+
+_run_integrations_migration()
+
+
 def _get_client_key(cur, s3_folder):
     """Look up and unwrap a client's encryption key by s3_folder. Returns raw key bytes or None."""
     try:

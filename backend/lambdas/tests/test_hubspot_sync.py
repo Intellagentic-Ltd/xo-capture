@@ -860,3 +860,49 @@ class TestWebhook:
             response = hubspot_module.lambda_handler(event, None)
             assert_status(response, 200)
             mock_push.assert_not_called()
+
+
+# ──────────────────────────────────────────────
+# Stage 0 integrations migration — HubSpot regression gate
+# Confirms HubSpot continues to read/write NULL-account_id rows after the
+# system_config schema change. Required by Stage 0 validation gates.
+# ──────────────────────────────────────────────
+
+class TestStage0MigrationRegression:
+    def test_set_config_writes_null_account_id(self, hubspot_module, mock_deps):
+        """HubSpot _set_config must write account_id = NULL (intentional asymmetry,
+        do not 'fix' by backfilling to an Intellagentic account_id)."""
+        started, mock_conn, mock_cur = mock_deps
+        hubspot_module._set_config(mock_conn, 'hubspot_access_token', 'tok')
+
+        sql, params = mock_cur.execute.call_args[0]
+        assert 'account_id' in sql.lower()
+        # The literal NULL is in the VALUES list, not in params — params carry
+        # the key and value only. Confirm the SQL emits VALUES (NULL, %s, %s, ...)
+        assert 'values (null' in sql.lower().replace('  ', ' ')
+        assert params == ('hubspot_access_token', 'tok')
+
+    def test_set_config_uses_new_on_conflict_target(self, hubspot_module, mock_deps):
+        """The ON CONFLICT target must reference (account_id, config_key) —
+        the legacy UNIQUE(config_key) constraint was dropped by the migration."""
+        started, mock_conn, mock_cur = mock_deps
+        hubspot_module._set_config(mock_conn, 'hubspot_refresh_token', 'rt')
+
+        sql = mock_cur.execute.call_args[0][0].lower()
+        assert 'on conflict (account_id, config_key)' in sql
+        # Old target must NOT be used — single-column ON CONFLICT (config_key)
+        # would fail at runtime against the new index.
+        assert 'on conflict (config_key)' not in sql
+
+    def test_get_config_remains_unscoped(self, hubspot_module, mock_deps):
+        """HubSpot reads stay deliberately unscoped — the NULL row is unique
+        per config_key thanks to NULLS NOT DISTINCT, and HubSpot keys never
+        collide with Salesforce/Gong keys (different prefixes)."""
+        started, mock_conn, mock_cur = mock_deps
+        mock_cur.fetchone.return_value = ('encrypted-value',)
+        hubspot_module._get_config(mock_conn, 'hubspot_access_token')
+
+        sql, params = mock_cur.execute.call_args[0]
+        # No account_id binding in the read path
+        assert params == ('hubspot_access_token',)
+        assert 'account_id' not in sql.lower()
