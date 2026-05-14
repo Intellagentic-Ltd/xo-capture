@@ -24,11 +24,16 @@ URI="arn:aws:apigateway:eu-west-2:lambda:path/2015-03-31/functions/arn:aws:lambd
 #   "XXXXXX:POST:/salesforce/disconnect"
 #   "XXXXXX:POST:/salesforce/sync/push"
 ROUTES=(
-  # "RES_ID:METHOD:/salesforce/connect"
-  # "RES_ID:METHOD:/salesforce/callback"
-  # "RES_ID:METHOD:/salesforce/status"
-  # "RES_ID:METHOD:/salesforce/disconnect"
-  # "RES_ID:METHOD:/salesforce/sync/push"
+  # PR 2 routes:
+  # "RES_ID:POST:/salesforce/connect"
+  # "RES_ID:GET:/salesforce/callback"
+  # "RES_ID:GET:/salesforce/status"
+  # "RES_ID:POST:/salesforce/disconnect"
+  # "RES_ID:POST:/salesforce/sync/push"
+  #
+  # PR 3 routes:
+  # "RES_ID:POST:/salesforce/sync/pull"
+  # "RES_ID:POST:/webhooks/salesforce/outbound-message"
 )
 
 if [ ${#ROUTES[@]} -eq 0 ]; then
