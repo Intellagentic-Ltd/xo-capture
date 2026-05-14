@@ -128,6 +128,29 @@ function parseWorkflows(md, count) {
   return items.slice(0, count);
 }
 
+// ── deriveShortLabel: produce a deck-friendly short label from a verbose engagement name ──
+// Template title boxes are sized for short topic labels (~10-20 chars).
+// Long descriptive engagement names ("Removing Bottlenecks - waiting for a human to notice")
+// overflow every title and break adjectival body interpolations.
+// Strategy: take the first segment before any em-dash/en-dash/colon/space-hyphen-space,
+// cap to MAX_LABEL_CHARS by trimming on word boundaries.
+const MAX_LABEL_CHARS = 22;
+function deriveShortLabel(engagementName, industry) {
+  if (!engagementName) return industry || "operations";
+  const firstSegment = String(engagementName).split(/\s*[—–:]\s*|\s+-\s+/)[0].trim();
+  if (firstSegment.length <= MAX_LABEL_CHARS) return firstSegment;
+  const words = firstSegment.split(/\s+/);
+  const acc = [];
+  let len = 0;
+  for (const w of words) {
+    const next = len + (acc.length ? 1 : 0) + w.length;
+    if (next > MAX_LABEL_CHARS) break;
+    acc.push(w);
+    len = next;
+  }
+  return acc.length > 0 ? acc.join(" ") : firstSegment.slice(0, MAX_LABEL_CHARS);
+}
+
 // ── assembleDeckData: pure JS mapping from analysis JSON to slide data ──
 function assembleDeckData(results, engagementName) {
   const problems = results.problems || results.problems_identified || [];
@@ -138,7 +161,11 @@ function assembleDeckData(results, engagementName) {
 
   const clientName = results.company_name || "Client";
   const industry = results.industry || results.client_industry || "this domain";
-  const scope = engagementName || industry;
+  // Prefer an explicit short label (set by the capture form), fall back to derived label.
+  // `scope` is used adjectivally on slides 3-8 — it MUST be short. The full `engagementName`
+  // is only used on slide 1 (cover) where we auto-shrink the title font.
+  const explicitShort = (results.engagement_short_label || "").trim();
+  const scope = explicitShort || deriveShortLabel(engagementName, industry);
   const scopeCap = scope.charAt(0).toUpperCase() + scope.slice(1);
   const description = results.description || results.client_description || "";
   const contactName = results.client_contact || clientName;
@@ -247,7 +274,7 @@ function assembleDeckData(results, engagementName) {
 
   // ── Sector-specific text ──
   const constitutionalSafetyTitle = `Constitutional Safety — Why This Matters for ${shortName}'s ${scopeCap} Operations`;
-  const constitutionalSafetyNote = `In ${scope}, a single unchecked decision can cascade into compliance failures, financial exposure, and reputational damage. XO's Two-Brain architecture (Actor + Critic), designed by Dr. Mabrouka Abuhmida, ensures every output is bounded by ${clientName}'s own domain rules — not advisory guidelines, but hard constitutional constraints with full audit trails.`;
+  const constitutionalSafetyNote = `Within ${clientName}'s ${scope.toLowerCase()} workstream, a single unchecked decision can cascade into compliance failures, financial exposure, and reputational damage. XO's Two-Brain architecture (Actor + Critic), designed by Dr. Mabrouka Abuhmida, ensures every output is bounded by ${clientName}'s own domain rules — not advisory guidelines, but hard constitutional constraints with full audit trails.`;
 
   // ── OODA descriptions sector-specific (max 150 chars to fit 0.42h card) ──
   const oodaPhases = [
@@ -257,23 +284,27 @@ function assembleDeckData(results, engagementName) {
     { phase: "ACT", desc: truncate(`Bounded execution via Streamline — ${contactName}'s ${scope} team authorises; system executes. Full audit trail.`, 150) },
   ];
 
+  // Slide titles (4-7) use the SHORT label so they fit in fixed-size title boxes.
+  // The full engagementName is only used on slide 1 (cover), which auto-shrinks its font.
+  const hasLabel = Boolean(engagementName || explicitShort);
   return {
     title: engagementName ? `Operational Briefing:\nScaling ${clientName} — ${engagementName}` : `Operational Briefing:\nScaling ${clientName}`,
     contactLine: `Prepared for ${contactName}  |  ${dateStr}`,
     slideTitle: `Where ${shortName} Stands Today`,
     oodaTitle: shortName,
+    shortLabel: scope,
     stats,
     challengeTitle: `The ${scopeCap} Challenge`,
     challenges,
     problemCallout,
     oodaPhases,
     maturityStart: `${shortName} starts at L1. You pull us forward as confidence builds.`,
-    workflowTitle: engagementName ? `${engagementName} Workflows That Encode Institutional Knowledge` : "Workflows That Encode Institutional Knowledge",
+    workflowTitle: hasLabel ? `${scopeCap} Workflows That Encode Institutional Knowledge` : "Workflows That Encode Institutional Knowledge",
     workflows: workflowData,
-    beforeAfterTitle: engagementName ? `${engagementName}: From System of Record to System of Action` : "From System of Record to System of Action",
+    beforeAfterTitle: hasLabel ? `${scopeCap}: From System of Record to System of Action` : "From System of Record to System of Action",
     comparisons: comparisons.slice(0, 6),
     impactLine,
-    pocTitle: engagementName ? `21-Day ${engagementName} Proof of Concept` : "21-Day Proof of Concept",
+    pocTitle: hasLabel ? `21-Day ${scopeCap} Proof of Concept` : "21-Day Proof of Concept",
     phases,
     nextSteps,
     successMetric,
@@ -298,10 +329,16 @@ function buildSlide1_Title(pres, data) {
     { text: "XO", options: { bold: true, color: RED, fontSize: 16 } },
   ], { x: 0.7, y: 0.5, w: 4, h: 0.5, margin: 0 });
 
-  // Title
-  s.addText(data.title, {
+  // Title — auto-shrink font by total length so verbose engagement names + long client
+  // names don't overflow the 2.0in-tall title box and collide with the byline below.
+  // At 36pt Georgia bold each line is ~0.55in, so the box fits ~3.5 lines.
+  // Calibrated against: "Operational Briefing:\nScaling Hywel Dda University Health Board — Clinical Handoffs" (≈98 chars → 28pt).
+  const titleStr = data.title || "";
+  const titleLen = titleStr.length;
+  const titleFontSize = titleLen > 90 ? 24 : titleLen > 65 ? 28 : titleLen > 50 ? 32 : 36;
+  s.addText(titleStr, {
     x: 0.7, y: 1.5, w: 8, h: 2.0,
-    fontSize: 36, fontFace: "Georgia", bold: true, color: WHITE,
+    fontSize: titleFontSize, fontFace: "Georgia", bold: true, color: WHITE,
     lineSpacingMultiple: 1.15, valign: "top", margin: 0,
   });
 
@@ -451,7 +488,9 @@ function buildSlide4_OODALoop(pres, data) {
   s.addShape(pres.shapes.OVAL, { x: 0.5, y: 0.35, w: 0.45, h: 0.45, fill: { color: NAVY } });
   s.addText("03", { x: 0.5, y: 0.35, w: 0.45, h: 0.45, fontSize: 12, fontFace: "Arial", bold: true, color: WHITE, align: "center", valign: "middle", margin: 0 });
 
-  s.addText(`The XO Command Loop for ${data.oodaTitle || "Client"}${data.engagementName ? ` — ${data.engagementName}` : ""}`, {
+  // Use the SHORT label (not the full engagement name) so the title fits the 0.55in-tall box.
+  const ooLabel = data.shortLabel || data.engagementName || "";
+  s.addText(`The XO Command Loop for ${data.oodaTitle || "Client"}${ooLabel ? ` — ${ooLabel}` : ""}`, {
     x: 1.15, y: 0.3, w: 8, h: 0.55,
     fontSize: 26, fontFace: "Georgia", bold: true, color: NAVY, margin: 0,
   });
@@ -728,6 +767,7 @@ exports.handler = async (event) => {
     }
 
     // 2. Map analysis JSON → slide data (pure JS, no AI call)
+    // `engagement_short_label` (optional) overrides the auto-derived short label used on slides 3-7.
     const engName = results.engagement_name || "";
     const slideData = assembleDeckData(results, engName);
     slideData.engagementName = engName;
