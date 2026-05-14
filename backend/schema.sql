@@ -374,17 +374,23 @@ ALTER TABLE engagements ADD COLUMN IF NOT EXISTS salesforce_task_id VARCHAR(18);
 ALTER TABLE engagements ADD COLUMN IF NOT EXISTS salesforce_synced_at TIMESTAMP WITH TIME ZONE;
 CREATE INDEX IF NOT EXISTS idx_clients_sf_account ON clients(salesforce_account_id);
 
--- Sync log — one row per push/pull action. account_id-scoped so each
--- tenant only sees its own activity (cross-checked at the lambda layer).
+-- Sync log — one row per push/pull/conflict/spoof event. account_id-scoped
+-- so each tenant only sees its own activity (enforced at the lambda layer).
+-- PR 3 extends sync_direction to: 'push' | 'pull' | 'conflict' | 'spoof'.
+-- The 'conflict' rows are read by the PR 4 conflict UI:
+--   SELECT ... WHERE sync_direction = 'conflict' AND account_id = %s
+-- The 'spoof' rows are written by the Outbound Message webhook when the
+-- claimed OrganizationId doesn't match the stored salesforce_org_id —
+-- useful for security audit / alerting.
 CREATE TABLE IF NOT EXISTS salesforce_sync_log (
     id SERIAL PRIMARY KEY,
     account_id INTEGER REFERENCES accounts(id) ON DELETE CASCADE,
-    record_type VARCHAR(20) NOT NULL,    -- 'client' | 'engagement' | 'contact' (PR 3)
+    record_type VARCHAR(20) NOT NULL,    -- 'client' | 'engagement' | 'contact' | 'webhook'
     record_id UUID,
     salesforce_id VARCHAR(18),
-    sync_direction VARCHAR(10) NOT NULL, -- 'push' | 'pull'
+    sync_direction VARCHAR(10) NOT NULL, -- 'push' | 'pull' | 'conflict' | 'spoof'
     fields_updated TEXT,                  -- JSON array of field names
-    fields_skipped TEXT,
+    fields_skipped TEXT,                  -- JSON array of conflicting field names
     details TEXT,
     synced_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
