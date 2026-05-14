@@ -155,6 +155,29 @@ def _run_hubspot_migrations():
         # Engagement note tracking columns
         cur.execute("ALTER TABLE engagements ADD COLUMN IF NOT EXISTS hubspot_note_id TEXT")
         cur.execute("ALTER TABLE engagements ADD COLUMN IF NOT EXISTS hubspot_synced_at TIMESTAMP")
+
+        # Defensive duplicate of the integrations migration so cold-start order
+        # is safe. Canonical owner is clients/lambda_function.py
+        # (_run_integrations_migration). If hubspot-sync cold-starts before the
+        # clients lambda has run, this self-heals the system_config schema —
+        # crucial because _set_config below uses the new ON CONFLICT target.
+        # TECH DEBT: long-term, replace inline cold-start migrations with a
+        # one-shot migration runner outside the lambdas.
+        # HubSpot rows stay account_id IS NULL — see clients lambda comment
+        # for the reasoning; do not "fix" the asymmetry.
+        cur.execute(
+            "ALTER TABLE system_config ADD COLUMN IF NOT EXISTS account_id "
+            "INTEGER REFERENCES accounts(id) ON DELETE CASCADE"
+        )
+        cur.execute(
+            "ALTER TABLE system_config "
+            "DROP CONSTRAINT IF EXISTS system_config_config_key_key"
+        )
+        cur.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_system_config_account_key "
+            "ON system_config (account_id, config_key) NULLS NOT DISTINCT"
+        )
+
         conn.commit()
         # Temporary diagnostic
         cur.execute("SELECT e.name, e.approved_at, e.status, c.company_name FROM engagements e JOIN clients c ON e.client_id = c.id WHERE c.company_name LIKE '%%FC Dyn%%'")
@@ -173,6 +196,15 @@ _run_hubspot_migrations()
 
 
 # ── System Config Helpers ──
+#
+# CONFIG_KEY NAMESPACE CONTRACT (mirrored in shared/integrations_config.py):
+#   hubspot_*    → account_id IS NULL  (Intellagentic-only, global)  ← this lambda
+#   salesforce_* → account_id IS NOT NULL (per-account)              ← integrations_config.py
+#   gong_*       → account_id IS NOT NULL (per-account)              ← integrations_config.py
+# Cross-namespace collisions are forbidden. _get_config below is intentionally
+# unscoped (WHERE config_key = %s only) — this is safe because only 'hubspot_*'
+# rows are NULL-scoped, so no salesforce_*/gong_* row can shadow a hubspot key.
+# _set_config writes account_id = NULL explicitly to enforce this on the write side.
 
 def _get_config(conn, key):
     """Read a value from system_config table."""
@@ -184,12 +216,17 @@ def _get_config(conn, key):
 
 
 def _set_config(conn, key, value):
-    """Upsert a value in system_config table."""
+    """Upsert a value in system_config table.
+    HubSpot writes NULL account_id (global scope, intentional asymmetry).
+    The ON CONFLICT target uses the new (account_id, config_key) NULLS NOT
+    DISTINCT index — the legacy UNIQUE(config_key) was dropped by the
+    integrations migration."""
     cur = conn.cursor()
     cur.execute("""
-        INSERT INTO system_config (config_key, config_value, updated_at)
-        VALUES (%s, %s, NOW())
-        ON CONFLICT (config_key) DO UPDATE SET config_value = EXCLUDED.config_value, updated_at = NOW()
+        INSERT INTO system_config (account_id, config_key, config_value, updated_at)
+        VALUES (NULL, %s, %s, NOW())
+        ON CONFLICT (account_id, config_key) DO UPDATE
+            SET config_value = EXCLUDED.config_value, updated_at = NOW()
     """, (key, value))
     conn.commit()
     cur.close()
