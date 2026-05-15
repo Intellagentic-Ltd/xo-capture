@@ -515,3 +515,217 @@ class TestGenerateClientConfig:
         assert 'Slow processes' in config
         assert 'Data silos' in config
         assert 'Pain Points' in config
+
+
+# ──────────────────────────────────────────────
+# PR 3.4 — Share API
+#   POST   /clients/{client_id}/shares
+#   DELETE /clients/{client_id}/shares/{account_id}
+#   GET    /clients/{client_id}/shares
+# Admin-only sharing (Ken's Q3): account_admin or super_admin in the
+# OWNING account can grant/revoke. Recipients cannot re-grant onward.
+# ──────────────────────────────────────────────
+
+SHARE_CLIENT_ID = 'client-uuid-1'
+# ACCOUNT_ADMIN_USER in conftest has account_id=2, so the OWNER fixtures
+# below use 2 to model "admin in the owning account". RECIPIENT_ACCOUNT
+# is any other integer.
+OWNING_ACCOUNT = 2
+RECIPIENT_ACCOUNT = 99
+
+
+def _share_event(method, client_id=SHARE_CLIENT_ID, recipient=None,
+                 body=None):
+    """Build an event with the standard pathParameters shape."""
+    path = f'/clients/{client_id}/shares'
+    path_params = {'client_id': client_id}
+    if recipient is not None:
+        path += f'/{recipient}'
+        path_params['account_id'] = str(recipient)
+    return make_authed_event(method=method, path=path, body=body,
+                             path_params=path_params)
+
+
+class TestShareApiGrant:
+    def test_account_admin_owner_grants_share(self, clients_module, mock_deps):
+        started, _, mock_cur, _ = mock_deps
+        # ACCOUNT_ADMIN_USER has account_id=42; client also owned by 42.
+        started['require_auth'].return_value = (ACCOUNT_ADMIN_USER, None)
+        # _require_admin_in_owning_account SELECT account_id FROM clients → owning=42
+        # INSERT ... RETURNING granted_at → datetime
+        now = datetime.now(timezone.utc)
+        mock_cur.fetchone.side_effect = [(OWNING_ACCOUNT,), (now,)]
+
+        event = _share_event('POST', body={
+            'account_id': RECIPIENT_ACCOUNT,
+            'permissions': 'read_write',
+        })
+        response = clients_module.lambda_handler(event, None)
+        assert_status(response, 200)
+        body = parse_body(response)
+        assert body['granted'] is True
+        assert body['shared_with_account_id'] == RECIPIENT_ACCOUNT
+        assert body['permissions'] == 'read_write'
+
+        # Verify the INSERT carried the right parameters
+        executed = [c.args for c in mock_cur.execute.call_args_list]
+        inserts = [c for c in executed if 'INSERT INTO client_shares' in c[0]]
+        assert len(inserts) == 1
+        params = inserts[0][1]
+        assert params == (SHARE_CLIENT_ID, RECIPIENT_ACCOUNT,
+                          ACCOUNT_ADMIN_USER['user_id'], 'read_write')
+
+    def test_account_user_cannot_grant(self, clients_module, mock_deps):
+        """Q3 admin-only: account_user gets 403 even within the owning account."""
+        started, _, mock_cur, _ = mock_deps
+        started['require_auth'].return_value = (ACCOUNT_USER, None)
+        event = _share_event('POST', body={'account_id': RECIPIENT_ACCOUNT,
+                                           'permissions': 'read_write'})
+        response = clients_module.lambda_handler(event, None)
+        assert_status(response, 403)
+        # No INSERT happened.
+        executed = [c.args[0] for c in mock_cur.execute.call_args_list]
+        assert not any('INSERT INTO client_shares' in s for s in executed)
+
+    def test_client_contact_cannot_grant(self, clients_module, mock_deps):
+        started, _, mock_cur, _ = mock_deps
+        started['require_auth'].return_value = (CLIENT_CONTACT_USER, None)
+        event = _share_event('POST', body={'account_id': RECIPIENT_ACCOUNT,
+                                           'permissions': 'read_write'})
+        response = clients_module.lambda_handler(event, None)
+        assert_status(response, 403)
+
+    def test_recipient_cannot_re_grant(self, clients_module, mock_deps):
+        """LOAD-BEARING: an account_admin in the RECIPIENT account cannot
+        re-grant the same client onward. Only the owning account can grant."""
+        started, _, mock_cur, _ = mock_deps
+        # ACCOUNT_ADMIN_USER is account 2; client owned by 99 (different).
+        started['require_auth'].return_value = (ACCOUNT_ADMIN_USER, None)
+        # _require_admin_in_owning_account: SELECT account_id → 99 (not user's 2)
+        mock_cur.fetchone.return_value = (RECIPIENT_ACCOUNT,)
+        event = _share_event('POST', body={'account_id': 12345,
+                                           'permissions': 'read_write'})
+        response = clients_module.lambda_handler(event, None)
+        assert_status(response, 403)
+        assert 'OWNING account' in parse_body(response)['error']
+
+    def test_self_share_rejected(self, clients_module, mock_deps):
+        started, _, mock_cur, _ = mock_deps
+        started['require_auth'].return_value = (ACCOUNT_ADMIN_USER, None)
+        mock_cur.fetchone.return_value = (OWNING_ACCOUNT,)
+        event = _share_event('POST', body={
+            'account_id': OWNING_ACCOUNT,   # same as owner
+            'permissions': 'read_write',
+        })
+        response = clients_module.lambda_handler(event, None)
+        assert_status(response, 400)
+        assert 'own owning account' in parse_body(response)['error']
+
+    def test_bad_permissions_rejected(self, clients_module, mock_deps):
+        started, _, _, _ = mock_deps
+        started['require_auth'].return_value = (ACCOUNT_ADMIN_USER, None)
+        event = _share_event('POST', body={
+            'account_id': RECIPIENT_ACCOUNT,
+            'permissions': 'admin',   # not in the enum
+        })
+        response = clients_module.lambda_handler(event, None)
+        assert_status(response, 400)
+
+    def test_missing_recipient_rejected(self, clients_module, mock_deps):
+        started, _, _, _ = mock_deps
+        started['require_auth'].return_value = (ACCOUNT_ADMIN_USER, None)
+        event = _share_event('POST', body={'permissions': 'read_write'})
+        response = clients_module.lambda_handler(event, None)
+        assert_status(response, 400)
+
+    def test_super_admin_can_grant_any_client(self, clients_module, mock_deps):
+        started, _, mock_cur, _ = mock_deps
+        started['require_auth'].return_value = (SUPER_ADMIN_USER, None)
+        now = datetime.now(timezone.utc)
+        # super_admin: SELECT account_id → 12345, then INSERT RETURNING.
+        mock_cur.fetchone.side_effect = [(12345,), (now,)]
+        event = _share_event('POST', body={
+            'account_id': RECIPIENT_ACCOUNT,
+            'permissions': 'read_only',
+        })
+        response = clients_module.lambda_handler(event, None)
+        assert_status(response, 200)
+
+
+class TestShareApiRevoke:
+    def test_account_admin_owner_revokes(self, clients_module, mock_deps):
+        started, _, mock_cur, _ = mock_deps
+        started['require_auth'].return_value = (ACCOUNT_ADMIN_USER, None)
+        mock_cur.fetchone.return_value = (OWNING_ACCOUNT,)
+        mock_cur.rowcount = 1
+        event = _share_event('DELETE', recipient=RECIPIENT_ACCOUNT)
+        response = clients_module.lambda_handler(event, None)
+        assert_status(response, 200)
+        body = parse_body(response)
+        assert body['revoked'] is True
+        executed = [c.args for c in mock_cur.execute.call_args_list]
+        deletes = [c for c in executed if 'DELETE FROM client_shares' in c[0]]
+        assert len(deletes) == 1
+        assert deletes[0][1] == (SHARE_CLIENT_ID, RECIPIENT_ACCOUNT)
+
+    def test_account_user_cannot_revoke(self, clients_module, mock_deps):
+        started, _, mock_cur, _ = mock_deps
+        started['require_auth'].return_value = (ACCOUNT_USER, None)
+        event = _share_event('DELETE', recipient=RECIPIENT_ACCOUNT)
+        response = clients_module.lambda_handler(event, None)
+        assert_status(response, 403)
+        executed = [c.args[0] for c in mock_cur.execute.call_args_list]
+        assert not any('DELETE FROM client_shares' in s for s in executed)
+
+    def test_bad_account_id_in_path_rejected(self, clients_module, mock_deps):
+        started, _, _, _ = mock_deps
+        started['require_auth'].return_value = (ACCOUNT_ADMIN_USER, None)
+        event = _share_event('DELETE', recipient='not-an-int')
+        response = clients_module.lambda_handler(event, None)
+        assert_status(response, 400)
+
+
+class TestShareApiList:
+    def test_owner_sees_all_grants(self, clients_module, mock_deps):
+        started, _, mock_cur, _ = mock_deps
+        started['require_auth'].return_value = (ACCOUNT_ADMIN_USER, None)
+        # SELECT account_id → 42 (matches user). SELECT shares → 2 rows.
+        mock_cur.fetchone.return_value = (OWNING_ACCOUNT,)
+        now = datetime.now(timezone.utc)
+        mock_cur.fetchall.return_value = [
+            (RECIPIENT_ACCOUNT, 'read_write', 'u-grantor', now),
+            (12345,            'read_only',  'u-grantor', now),
+        ]
+        event = _share_event('GET')
+        response = clients_module.lambda_handler(event, None)
+        assert_status(response, 200)
+        body = parse_body(response)
+        assert len(body['shares']) == 2
+        # The SELECT used by owner returns ALL grants for the client
+        executed = [c.args for c in mock_cur.execute.call_args_list]
+        list_queries = [
+            c for c in executed
+            if 'FROM client_shares' in c[0] and 'shared_with_account_id' not in c[0].split('WHERE')[1]
+        ]
+        assert list_queries, "owner list query should not filter by shared_with_account_id"
+
+    def test_recipient_sees_only_own_grant(self, clients_module, mock_deps):
+        """ACCOUNT_ADMIN_USER (account 42) viewing a client owned by 99.
+        Query must filter by shared_with_account_id = 42."""
+        started, _, mock_cur, _ = mock_deps
+        started['require_auth'].return_value = (ACCOUNT_ADMIN_USER, None)
+        # Owning account = 99 (not user's 42)
+        mock_cur.fetchone.return_value = (RECIPIENT_ACCOUNT,)
+        now = datetime.now(timezone.utc)
+        mock_cur.fetchall.return_value = [(OWNING_ACCOUNT, 'read_write', 'u-x', now)]
+        event = _share_event('GET')
+        response = clients_module.lambda_handler(event, None)
+        assert_status(response, 200)
+        executed = [c.args for c in mock_cur.execute.call_args_list]
+        recipient_queries = [
+            c for c in executed
+            if 'FROM client_shares' in c[0] and 'shared_with_account_id = %s' in c[0]
+        ]
+        assert len(recipient_queries) == 1
+        # Query must be scoped to the JWT's account_id, not an attacker-supplied value
+        assert recipient_queries[0][1] == (SHARE_CLIENT_ID, OWNING_ACCOUNT)

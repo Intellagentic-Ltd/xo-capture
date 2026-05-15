@@ -549,6 +549,11 @@ def _route_clients(event, user, path, method):
         elif method == 'DELETE':
             return handle_delete_skill(event, user)
 
+    # Share API (PR 3.4) — routes must precede the generic /clients routes
+    # since /clients/{id}/shares also contains /clients.
+    if '/shares' in path and '/clients' in path:
+        return _route_shares(event, user, path, method)
+
     if '/engagements' in path:
         if method == 'GET':
             return handle_list_engagements(event, user)
@@ -1730,6 +1735,301 @@ def handle_delete_client(event, user):
             'headers': CORS_HEADERS,
             'body': json.dumps({'error': 'Internal server error', 'message': str(e)})
         }
+
+
+# ──────────────────────────────────────────────
+# Share API (PR 3.4)
+# POST   /clients/{client_id}/shares                    — grant
+# DELETE /clients/{client_id}/shares/{account_id}       — revoke
+# GET    /clients/{client_id}/shares                    — list
+#
+# All three require account_admin or super_admin in the OWNING account.
+# Recipient sees only their own grant via GET; owner sees all.
+# ──────────────────────────────────────────────
+
+VALID_SHARE_PERMISSIONS = ('read_only', 'read_write')
+
+
+def _extract_share_path_args(event):
+    """Return (client_id, recipient_account_id_or_none). Looks at
+    pathParameters first (API Gateway path templates), then falls back
+    to splitting the path. recipient is None for POST/GET; required for DELETE.
+    """
+    path_params = event.get('pathParameters') or {}
+    client_id = path_params.get('client_id')
+    recipient = path_params.get('account_id')
+
+    if not client_id or recipient is None:
+        path = event.get('path', '')
+        parts = [p for p in path.split('/') if p]
+        # /clients/{client_id}/shares[/<account_id>]
+        if 'shares' in parts:
+            idx = parts.index('shares')
+            if idx >= 2 and parts[idx - 2] == 'clients':
+                client_id = client_id or parts[idx - 1]
+                if not recipient and len(parts) > idx + 1:
+                    recipient = parts[idx + 1]
+    return client_id, recipient
+
+
+def _require_admin_in_owning_account(conn, user, client_id):
+    """Return (owning_account_id, None) on success or (None, error_response).
+    Grant/revoke/list require account_admin or super_admin in the owning
+    account. account_users in the owning account cannot grant shares —
+    sharing across tenants is an org-level decision."""
+    if user.get('is_admin') or user.get('account_role') == 'super_admin':
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT account_id FROM clients WHERE id = %s", (client_id,))
+            row = cur.fetchone()
+        finally:
+            cur.close()
+        if not row:
+            return None, {
+                'statusCode': 404,
+                'headers': CORS_HEADERS,
+                'body': json.dumps({'error': f'Client {client_id} not found'}),
+            }
+        return row[0], None
+
+    if user.get('account_role') != 'account_admin' or user.get('account_id') is None:
+        return None, {
+            'statusCode': 403,
+            'headers': CORS_HEADERS,
+            'body': json.dumps({
+                'error': 'Granting / revoking shares requires account_admin '
+                         'or super_admin in the owning account'
+            }),
+        }
+
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT account_id FROM clients WHERE id = %s", (client_id,))
+        row = cur.fetchone()
+    finally:
+        cur.close()
+    if not row:
+        return None, {
+            'statusCode': 404,
+            'headers': CORS_HEADERS,
+            'body': json.dumps({'error': f'Client {client_id} not found'}),
+        }
+    owning_account_id = row[0]
+    if owning_account_id != user.get('account_id'):
+        return None, {
+            'statusCode': 403,
+            'headers': CORS_HEADERS,
+            'body': json.dumps({
+                'error': 'Only an admin in the client\'s OWNING account can '
+                         'grant or revoke shares. Recipients cannot re-grant.'
+            }),
+        }
+    return owning_account_id, None
+
+
+def handle_create_share(event, user):
+    """POST /clients/{client_id}/shares  body: {account_id, permissions}"""
+    client_id, _ = _extract_share_path_args(event)
+    if not client_id:
+        return {'statusCode': 400, 'headers': CORS_HEADERS,
+                'body': json.dumps({'error': 'client_id required in path'})}
+
+    try:
+        body = json.loads(event.get('body') or '{}')
+    except json.JSONDecodeError:
+        return {'statusCode': 400, 'headers': CORS_HEADERS,
+                'body': json.dumps({'error': 'Invalid JSON body'})}
+
+    recipient_account_id = body.get('account_id')
+    permissions = body.get('permissions', 'read_write')
+
+    if not isinstance(recipient_account_id, int):
+        return {'statusCode': 400, 'headers': CORS_HEADERS,
+                'body': json.dumps({'error': 'account_id (int) is required'})}
+    if permissions not in VALID_SHARE_PERMISSIONS:
+        return {'statusCode': 400, 'headers': CORS_HEADERS,
+                'body': json.dumps({
+                    'error': f"permissions must be one of {VALID_SHARE_PERMISSIONS}"
+                })}
+
+    conn = get_db_connection()
+    try:
+        owning_account_id, err = _require_admin_in_owning_account(conn, user, client_id)
+        if err:
+            return err
+
+        if recipient_account_id == owning_account_id:
+            return {'statusCode': 400, 'headers': CORS_HEADERS,
+                    'body': json.dumps({
+                        'error': 'Cannot share a client with its own owning account'
+                    })}
+
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """INSERT INTO client_shares
+                       (client_id, shared_with_account_id, granted_by_user_id, permissions)
+                   VALUES (%s, %s, %s, %s)
+                   ON CONFLICT (client_id, shared_with_account_id) DO UPDATE
+                       SET permissions = EXCLUDED.permissions,
+                           granted_by_user_id = EXCLUDED.granted_by_user_id,
+                           granted_at = NOW()
+                   RETURNING granted_at""",
+                (client_id, recipient_account_id, user['user_id'], permissions),
+            )
+            row = cur.fetchone()
+            conn.commit()
+        finally:
+            cur.close()
+
+        return {
+            'statusCode': 200,
+            'headers': CORS_HEADERS,
+            'body': json.dumps({
+                'granted': True,
+                'client_id': str(client_id),
+                'shared_with_account_id': recipient_account_id,
+                'permissions': permissions,
+                'granted_at': row[0].isoformat() if row and row[0] else None,
+            }),
+        }
+    finally:
+        conn.close()
+
+
+def handle_delete_share(event, user):
+    """DELETE /clients/{client_id}/shares/{account_id}"""
+    client_id, recipient = _extract_share_path_args(event)
+    if not client_id:
+        return {'statusCode': 400, 'headers': CORS_HEADERS,
+                'body': json.dumps({'error': 'client_id required in path'})}
+    if not recipient:
+        return {'statusCode': 400, 'headers': CORS_HEADERS,
+                'body': json.dumps({'error': 'account_id required in path'})}
+    try:
+        recipient_account_id = int(recipient)
+    except (TypeError, ValueError):
+        return {'statusCode': 400, 'headers': CORS_HEADERS,
+                'body': json.dumps({'error': 'account_id must be an integer'})}
+
+    conn = get_db_connection()
+    try:
+        _, err = _require_admin_in_owning_account(conn, user, client_id)
+        if err:
+            return err
+
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "DELETE FROM client_shares "
+                "WHERE client_id = %s AND shared_with_account_id = %s",
+                (client_id, recipient_account_id),
+            )
+            deleted = cur.rowcount
+            conn.commit()
+        finally:
+            cur.close()
+
+        return {
+            'statusCode': 200,
+            'headers': CORS_HEADERS,
+            'body': json.dumps({
+                'revoked': True,
+                'client_id': str(client_id),
+                'shared_with_account_id': recipient_account_id,
+                'rows_affected': deleted,
+            }),
+        }
+    finally:
+        conn.close()
+
+
+def handle_list_shares(event, user):
+    """GET /clients/{client_id}/shares — owner sees all grants; recipient
+    sees only their own grant."""
+    client_id, _ = _extract_share_path_args(event)
+    if not client_id:
+        return {'statusCode': 400, 'headers': CORS_HEADERS,
+                'body': json.dumps({'error': 'client_id required in path'})}
+
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT account_id FROM clients WHERE id = %s", (client_id,))
+            row = cur.fetchone()
+        finally:
+            cur.close()
+        if not row:
+            return {'statusCode': 404, 'headers': CORS_HEADERS,
+                    'body': json.dumps({'error': f'Client {client_id} not found'})}
+        owning_account_id = row[0]
+
+        is_owner_admin = (
+            user.get('is_admin')
+            or user.get('account_role') == 'super_admin'
+            or (
+                user.get('account_role') == 'account_admin'
+                and user.get('account_id') == owning_account_id
+            )
+        )
+
+        cur = conn.cursor()
+        try:
+            if is_owner_admin:
+                cur.execute(
+                    """SELECT shared_with_account_id, permissions,
+                              granted_by_user_id, granted_at
+                       FROM client_shares
+                       WHERE client_id = %s
+                       ORDER BY granted_at DESC""",
+                    (client_id,),
+                )
+            elif user.get('account_id') is not None:
+                # Recipient view — only their own grant, if any.
+                cur.execute(
+                    """SELECT shared_with_account_id, permissions,
+                              granted_by_user_id, granted_at
+                       FROM client_shares
+                       WHERE client_id = %s AND shared_with_account_id = %s""",
+                    (client_id, user.get('account_id')),
+                )
+            else:
+                return {'statusCode': 403, 'headers': CORS_HEADERS,
+                        'body': json.dumps({'error': 'Access denied'})}
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+
+        shares = [
+            {
+                'shared_with_account_id': r[0],
+                'permissions': r[1],
+                'granted_by_user_id': str(r[2]) if r[2] else None,
+                'granted_at': r[3].isoformat() if r[3] else None,
+            }
+            for r in rows
+        ]
+        return {
+            'statusCode': 200,
+            'headers': CORS_HEADERS,
+            'body': json.dumps({'client_id': str(client_id), 'shares': shares}),
+        }
+    finally:
+        conn.close()
+
+
+def _route_shares(event, user, path, method):
+    """Dispatch /clients/{client_id}/shares[/{account_id}]."""
+    _, recipient = _extract_share_path_args(event)
+    if method == 'POST' and recipient is None:
+        return handle_create_share(event, user)
+    if method == 'GET' and recipient is None:
+        return handle_list_shares(event, user)
+    if method == 'DELETE' and recipient is not None:
+        return handle_delete_share(event, user)
+    return {'statusCode': 404, 'headers': CORS_HEADERS,
+            'body': json.dumps({'error': f'No share route for {method} {path}'})}
 
 
 def handle_get_system_config(event, user):

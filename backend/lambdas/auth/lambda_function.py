@@ -2099,12 +2099,57 @@ def handle_set_user_clients(event, target_user_id):
             cur.close(); conn.close()
             return {'statusCode': 403, 'headers': CORS_HEADERS, 'body': json.dumps({'error': 'Cannot assign clients for users in other accounts'})}
 
+        # PR 3.4: validate every client_id before insert. Allowed if:
+        #   (a) client.account_id == target user's account_id (same-tenant
+        #       assignment — the existing behaviour), OR
+        #   (b) a share grant exists from client's owning account TO the
+        #       target user's account (cross-tenant via client_shares).
+        # Silently skipping unknown / unauthorized client_ids would hide
+        # admin mistakes; instead, reject the whole request when any
+        # client_id is invalid so the caller knows to retry.
+        target_account_id = target[0]
+        rejected = []
+        validated = []
+        for cid in client_ids:
+            cur.execute("SELECT account_id FROM clients WHERE id = %s", (cid,))
+            row = cur.fetchone()
+            if not row:
+                rejected.append({'client_id': cid, 'reason': 'not_found'})
+                continue
+            owning_account_id = row[0]
+            if owning_account_id == target_account_id:
+                validated.append(cid)
+                continue
+            # Cross-tenant — require a share grant.
+            cur.execute(
+                "SELECT 1 FROM client_shares "
+                "WHERE client_id = %s AND shared_with_account_id = %s",
+                (cid, target_account_id),
+            )
+            if cur.fetchone() is not None:
+                validated.append(cid)
+            else:
+                rejected.append({'client_id': cid, 'reason': 'no_share_grant'})
+
+        if rejected:
+            cur.close(); conn.close()
+            return {
+                'statusCode': 400,
+                'headers': CORS_HEADERS,
+                'body': json.dumps({
+                    'error': 'One or more client_ids cannot be assigned to '
+                             "this user. Cross-account assignments require a "
+                             'share grant first via POST /clients/{id}/shares.',
+                    'rejected': rejected,
+                }),
+            }
+
         # Delete existing assignments
         cur.execute("DELETE FROM user_client_assignments WHERE user_id = %s", (target_user_id,))
 
-        # Insert new assignments
+        # Insert validated assignments
         count = 0
-        for cid in client_ids:
+        for cid in validated:
             try:
                 cur.execute("""
                     INSERT INTO user_client_assignments (user_id, client_id, assigned_by)
@@ -2112,7 +2157,7 @@ def handle_set_user_clients(event, target_user_id):
                 """, (target_user_id, cid, caller['user_id']))
                 count += 1
             except Exception:
-                pass  # Skip invalid client_ids
+                pass  # FK / unique constraint — should not happen post-validation
 
         conn.commit()
         cur.close(); conn.close()
