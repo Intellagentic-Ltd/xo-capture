@@ -587,8 +587,18 @@ def _maybe_trigger_sf_push(conn, db_client_id, account_id, change_type,
     """Convenience wrapper: skip if account isn't SF-connected, else fire
     the appropriate invoke. For create/update use synchronous=False (async).
     For delete use synchronous=True so we observe the outcome."""
-    if not _is_account_sf_connected(conn, account_id):
+    # Explicit log so a silent skip is always visible — distinguishes
+    # "no account_id" (data bug) from "no SF token row" (org not connected).
+    if not account_id:
+        print(f"SF push skipped for client {db_client_id} (change={change_type}): "
+              f"no account_id resolved for this client")
         return None
+    if not _is_account_sf_connected(conn, account_id):
+        print(f"SF push skipped for client {db_client_id} (change={change_type}): "
+              f"account {account_id} has no salesforce_access_token in system_config")
+        return None
+    print(f"SF push enqueued for client {db_client_id} (change={change_type}, "
+          f"account={account_id}, sync={synchronous})")
     if synchronous:
         return _push_sf_sync(db_client_id, account_id, change_type)
     _mark_push_pending(conn, db_client_id)
@@ -2701,9 +2711,18 @@ def handle_create_client(event, user):
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Accounts auto-assign their account_id to new clients
+        # Accounts auto-assign their account_id to new clients.
+        # NB: covers both the legacy is_account flag and the modern
+        # account_role values (account_admin / account_user / contributor) —
+        # earlier code only checked is_account, so role-based JWTs were
+        # silently leaving clients.account_id NULL and breaking the SF
+        # bidi push guard (which can't look up SF tokens without an
+        # account_id). Admins / super_admins fall through to body.account_id
+        # so they can still create clients in any account.
         account_id_val = body.get('account_id')  # int or None
-        if user.get('is_account') and user.get('account_id'):
+        if user.get('account_id') and not user.get('is_admin') and (
+            user.get('account_role') != 'super_admin'
+        ):
             account_id_val = user['account_id']
         intellagentic_lead_val = bool(body.get('intellagentic_lead', False))
 
