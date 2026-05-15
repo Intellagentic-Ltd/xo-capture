@@ -84,6 +84,12 @@ DEFERRED_LINES = {
     # flags conservatively; this entry says "we checked, it's fine."
     ('backend/lambdas/salesforce-sync/sf_pull.py', 261):
         'join condition on client_salesforce_links (per-tenant SF mapping)',
+    # PR 4: handle_conflicts SELECT joins clients + engagements for the
+    # record_label, but the account_id = %s WHERE clause binds
+    # l.account_id (salesforce_sync_log, exempt). The audit picks up the
+    # JOIN clients first and flags conservatively.
+    ('backend/lambdas/salesforce-sync/lambda_function.py', 711):
+        'WHERE clause on salesforce_sync_log (exempt); JOINs clients for label',
 }
 
 

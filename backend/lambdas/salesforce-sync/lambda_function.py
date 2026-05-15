@@ -34,7 +34,7 @@ from auth_helper import (
     require_auth, get_db_connection, log_activity, CORS_HEADERS,
 )
 from integrations_config import (
-    delete_account_config,
+    delete_account_config, get_account_config,
     create_oauth_nonce, consume_oauth_nonce,
 )
 from sf_client import (
@@ -374,7 +374,9 @@ def handle_callback(event):
 
 
 def handle_status(event, user):
-    """GET /salesforce/status — connection check + lightweight test call."""
+    """GET /salesforce/status — connection check + last_pull_at + unresolved
+    conflict count. PR 4 extends this so the header badge only makes one
+    backend roundtrip per render."""
     account_id, err = _require_account_id(user)
     if err:
         return err
@@ -382,8 +384,43 @@ def handle_status(event, user):
     conn = get_db_connection()
     try:
         tokens = read_account_tokens(conn, account_id)
+
+        # Per-entity last_pull timestamps live in system_config (PR 3 / 3.5).
+        # Header shows the most recent of the three.
+        last_pulls = [
+            get_account_config(conn, account_id, k)
+            for k in (
+                'salesforce_account_last_pull_at',
+                'salesforce_contact_last_pull_at',
+                'salesforce_opportunity_last_pull_at',
+            )
+        ]
+        last_pulls = [t for t in last_pulls if t]
+        last_pull_at = max(last_pulls) if last_pulls else None
+
+        # Unresolved conflicts (PR 4). Cheap COUNT — uses the audit-script
+        # exempt salesforce_sync_log table. The "not resolved" predicate
+        # is `details NOT LIKE '%resolved_at%'` per the PR 4 brief.
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """SELECT COUNT(*) FROM salesforce_sync_log
+                   WHERE account_id = %s
+                     AND sync_direction = 'conflict'
+                     AND (details IS NULL OR details NOT LIKE %s)""",
+                (account_id, '%resolved_at%'),
+            )
+            row = cur.fetchone()
+            unresolved_conflicts = (row[0] if row else 0) or 0
+        finally:
+            cur.close()
+
         if not tokens:
-            return _ok({'connected': False, 'instance_url': None, 'error': None})
+            return _ok({
+                'connected': False, 'instance_url': None, 'error': None,
+                'last_pull_at': last_pull_at,
+                'unresolved_conflicts': unresolved_conflicts,
+            })
 
         connected = True
         error_msg = None
@@ -393,7 +430,13 @@ def handle_status(event, user):
             )
             if status != 200:
                 connected = False
-                error_msg = body.get('message') or f"status={status}"
+                # Surface a stable 'token_expired' marker on 401 so the
+                # frontend can switch to the Reconnect banner without
+                # inspecting raw error strings.
+                if status == 401:
+                    error_msg = 'token_expired'
+                else:
+                    error_msg = body.get('message') or f"status={status}"
         except Exception as e:
             connected = False
             error_msg = str(e)
@@ -402,6 +445,8 @@ def handle_status(event, user):
             'connected': connected,
             'instance_url': tokens['instance_url'],
             'error': error_msg,
+            'last_pull_at': last_pull_at,
+            'unresolved_conflicts': unresolved_conflicts,
         })
     finally:
         conn.close()
@@ -630,6 +675,274 @@ def handle_sync_pull(event, user):
 
 
 # ──────────────────────────────────────────────
+# Conflicts (PR 4)
+#   GET  /salesforce/conflicts                — list unresolved conflicts
+#   POST /salesforce/conflicts/{log_id}/resolve — apply Keep XO / Take SF
+# ──────────────────────────────────────────────
+def _is_resolved(details_json: str | None) -> bool:
+    """Conflict rows persist resolution by appending {resolved_at, resolved_by,
+    resolution} into details JSON. Cheap check: substring on the marker."""
+    if not details_json:
+        return False
+    return 'resolved_at' in details_json
+
+
+def handle_conflicts(event, user):
+    """GET /salesforce/conflicts — list unresolved conflicts scoped to JWT
+    account_id. Joined with clients / engagements so the UI gets a record
+    label without a second roundtrip."""
+    account_id, err = _require_account_id(user)
+    if err:
+        return err
+
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """SELECT l.id, l.record_type, l.record_id, l.salesforce_id,
+                          l.fields_skipped, l.details, l.synced_at,
+                          COALESCE(c.company_name, e.name) AS record_label
+                   FROM salesforce_sync_log l
+                   LEFT JOIN clients c
+                          ON l.record_type = 'client' AND l.record_id = c.id
+                   LEFT JOIN engagements e
+                          ON l.record_type = 'engagement' AND l.record_id = e.id
+                   WHERE l.account_id = %s
+                     AND l.sync_direction = 'conflict'
+                     AND (l.details IS NULL OR l.details NOT LIKE %s)
+                   ORDER BY l.synced_at DESC
+                   LIMIT 200""",
+                (account_id, '%resolved_at%'),
+            )
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+
+        conflicts = []
+        for r in rows:
+            fields_skipped = None
+            details = None
+            try:
+                fields_skipped = json.loads(r[4]) if r[4] else []
+            except (json.JSONDecodeError, TypeError):
+                fields_skipped = []
+            try:
+                details = json.loads(r[5]) if r[5] else []
+            except (json.JSONDecodeError, TypeError):
+                details = []
+            conflicts.append({
+                'id': r[0],
+                'record_type': r[1],
+                'record_id': str(r[2]) if r[2] else None,
+                'salesforce_id': r[3],
+                'record_label': r[7] or '',
+                'fields_skipped': fields_skipped,
+                'details': details,
+                'synced_at': r[6].isoformat() if r[6] else None,
+            })
+        return _ok({'conflicts': conflicts})
+    finally:
+        conn.close()
+
+
+def _mark_resolved(conn, log_id, account_id, user_id, resolution):
+    """Append resolution metadata into details JSON. No new column —
+    keeps salesforce_sync_log immutable from a schema standpoint."""
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT details FROM salesforce_sync_log "
+            "WHERE id = %s AND account_id = %s",
+            (log_id, account_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            return False
+        try:
+            existing = json.loads(row[0]) if row[0] else []
+        except (json.JSONDecodeError, TypeError):
+            existing = []
+        # Wrap with resolution marker. Use a list-or-dict envelope to keep
+        # the conflict-detection diff intact while marking resolved.
+        envelope = {
+            'diffs': existing,
+            'resolved_at': datetime.now(timezone.utc).isoformat(),
+            'resolved_by': str(user_id) if user_id else None,
+            'resolution': resolution,
+        }
+        cur.execute(
+            "UPDATE salesforce_sync_log SET details = %s WHERE id = %s",
+            (json.dumps(envelope), log_id),
+        )
+        conn.commit()
+        return True
+    finally:
+        cur.close()
+
+
+def handle_resolve_conflict(event, user):
+    """POST /salesforce/conflicts/{log_id}/resolve  body: {resolution}"""
+    account_id, err = _require_account_id(user)
+    if err:
+        return err
+
+    path = event.get('path', '')
+    path_params = event.get('pathParameters') or {}
+    log_id = path_params.get('log_id')
+    if not log_id:
+        # Fallback: parse from path: /salesforce/conflicts/<id>/resolve
+        parts = [p for p in path.split('/') if p]
+        if 'conflicts' in parts:
+            i = parts.index('conflicts')
+            if len(parts) > i + 1:
+                log_id = parts[i + 1]
+    if not log_id:
+        return _err(400, "log_id required in path")
+    try:
+        log_id = int(log_id)
+    except (TypeError, ValueError):
+        return _err(400, "log_id must be an integer")
+
+    try:
+        body = json.loads(event.get('body') or '{}')
+    except json.JSONDecodeError:
+        return _err(400, "Invalid JSON body")
+    resolution = body.get('resolution', '').strip().lower()
+    if resolution not in ('keep_xo', 'take_sf'):
+        return _err(400, "resolution must be 'keep_xo' or 'take_sf'")
+
+    conn = get_db_connection()
+    try:
+        # Verify the row exists and belongs to this account.
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """SELECT record_type, record_id, salesforce_id, details
+                   FROM salesforce_sync_log
+                   WHERE id = %s AND account_id = %s
+                     AND sync_direction = 'conflict'""",
+                (log_id, account_id),
+            )
+            row = cur.fetchone()
+        finally:
+            cur.close()
+        if not row:
+            return _err(404, f"Conflict {log_id} not found for this account")
+        record_type, record_id, sf_id, details_raw = row
+        if _is_resolved(details_raw):
+            return _err(409, "Conflict already resolved")
+
+        tokens = read_account_tokens(conn, account_id)
+        if not tokens:
+            return _err(412, "Salesforce not connected for this account.")
+
+        # Apply the resolution. For MVP, both paths trigger a re-sync of
+        # the affected record — push for keep_xo, pull for take_sf. The
+        # actual reconciler logic lives in the existing modules; we just
+        # invoke it on a single record.
+        try:
+            if resolution == 'keep_xo':
+                _apply_keep_xo(conn, account_id, tokens, record_type, record_id)
+            else:
+                _apply_take_sf(conn, account_id, tokens, record_type, sf_id)
+        except Exception as e:
+            logger.exception("conflict resolve failed: log_id=%s resolution=%s: %s",
+                             log_id, resolution, e)
+            return _err(500, f"Resolution failed: {type(e).__name__}: {e}")
+
+        if not _mark_resolved(conn, log_id, account_id, user.get('user_id'),
+                              resolution):
+            return _err(404, f"Conflict {log_id} not found")
+        return _ok({'resolved': True, 'log_id': log_id, 'resolution': resolution})
+    finally:
+        conn.close()
+
+
+def _apply_keep_xo(conn, account_id, tokens, record_type, record_id):
+    """Push XO values to SF. record_type drives which push helper runs."""
+    if record_type == 'client':
+        # Read the client + push Account.
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """SELECT id, company_name, website_url, industry, description,
+                          pain_point, survival_metric_1, survival_metric_2,
+                          ai_persona, strategic_objective
+                   FROM clients WHERE id = %s""",
+                (record_id,),
+            )
+            row = cur.fetchone()
+        finally:
+            cur.close()
+        if not row:
+            raise RuntimeError(f"Client {record_id} missing")
+        client = {
+            'id': row[0], 'company_name': row[1], 'website_url': row[2],
+            'industry': row[3], 'description': row[4], 'pain_point': row[5],
+            'survival_metric_1': row[6], 'survival_metric_2': row[7],
+            'ai_persona': row[8], 'strategic_objective': row[9],
+        }
+        # Find the actor's existing SF mapping for this client.
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "SELECT salesforce_account_id FROM client_salesforce_links "
+                "WHERE client_id = %s AND account_id = %s",
+                (record_id, account_id),
+            )
+            link = cur.fetchone()
+        finally:
+            cur.close()
+        existing_sf_id = link[0] if link else None
+        _create_or_update_account(conn, account_id, tokens, client, existing_sf_id)
+    elif record_type == 'engagement':
+        # Engagement push currently writes a Task (PR 2 pattern). For
+        # conflict resolution we want to push the engagement fields back
+        # to the matched Opportunity. That helper isn't built yet; MVP
+        # treats "Keep XO" as no-op SF write for engagement and just
+        # marks resolved — the next pull will see XO is newer and pull
+        # path will skip (XO wins).
+        logger.info("keep_xo for engagement %s — marking resolved without "
+                    "re-push; next pull will respect XO as newer.", record_id)
+    else:
+        raise RuntimeError(f"Unsupported record_type: {record_type}")
+
+
+def _apply_take_sf(conn, account_id, tokens, record_type, sf_id):
+    """Pull SF values into XO. Re-fetches the SF record fresh so stale
+    values from the original conflict log can't overwrite current SF state."""
+    if record_type == 'client':
+        # Fetch the SF Account fresh and run the Account reconciler.
+        status, body = sf_call_with_refresh(
+            conn, account_id, tokens, 'GET', f'/sobjects/Account/{sf_id}'
+        )
+        if status != 200:
+            raise RuntimeError(f"SF Account {sf_id} fetch failed: {status}")
+        # Wrap in the shape the reconciler expects.
+        sf_account = {k: body.get(k) for k in (
+            'Id', 'Name', 'Description', 'Website', 'Industry', 'LastModifiedDate'
+        )}
+        from sf_pull import _reconcile_account
+        _reconcile_account(conn, account_id, sf_account)
+    elif record_type == 'engagement':
+        # Fetch the SF Opportunity and run the Opportunity reconciler.
+        status, body = sf_call_with_refresh(
+            conn, account_id, tokens, 'GET', f'/sobjects/Opportunity/{sf_id}'
+        )
+        if status != 200:
+            raise RuntimeError(f"SF Opportunity {sf_id} fetch failed: {status}")
+        sf_opp = {k: body.get(k) for k in (
+            'Id', 'Name', 'AccountId', 'StageName', 'Amount', 'CloseDate',
+            'Description', 'LastModifiedDate'
+        )}
+        from sf_opportunity_pull import _reconcile_opportunity
+        _reconcile_opportunity(conn, account_id, sf_opp)
+    else:
+        raise RuntimeError(f"Unsupported record_type: {record_type}")
+
+
+# ──────────────────────────────────────────────
 # Lambda handler / router
 # ──────────────────────────────────────────────
 def lambda_handler(event, context):
@@ -678,4 +991,10 @@ def _route_salesforce(event, user, path, method):
         return handle_sync_push(event, user)
     if '/salesforce/sync/pull' in path and method == 'POST':
         return handle_sync_pull(event, user)
+    # PR 4: conflicts list + resolve. Order matters — resolve sits under
+    # /salesforce/conflicts/{log_id}/resolve so the list route checks last.
+    if '/salesforce/conflicts/' in path and path.rstrip('/').endswith('/resolve') and method == 'POST':
+        return handle_resolve_conflict(event, user)
+    if '/salesforce/conflicts' in path and method == 'GET':
+        return handle_conflicts(event, user)
     return _err(404, f"No route for {method} {path}")

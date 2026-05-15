@@ -816,12 +816,15 @@ function ShareLinkModal({ clientId, onClose }) {
 // ============================================================
 // DASHBOARD SCREEN — Admin multi-client view
 // ============================================================
-function DashboardScreen({ onSelectClient, onCreateClient, isAdmin, isAccount, accounts, teamUsers }) {
+function DashboardScreen({ onSelectClient, onCreateClient, isAdmin, isAccount, accounts, teamUsers, user }) {
   const [clients, setClients] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [deleteConfirmClient, setDeleteConfirmClient] = useState(null)
   const [shareLinkClient, setShareLinkClient] = useState(null)
+  // PR 4: cross-tenant share modal — separate from shareLinkClient (which
+  // is the magic-link / client_contact flow).
+  const [shareWithClient, setShareWithClient] = useState(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [filterPartner, setFilterPartner] = useState('')
   const [filterIndustry, setFilterIndustry] = useState('')
@@ -967,8 +970,32 @@ function DashboardScreen({ onSelectClient, onCreateClient, isAdmin, isAccount, a
         </div>
       )}
       <div style={{ flex: '1 1 0', minWidth: 0, overflow: 'hidden' }}>
-        <span style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-primary)', display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-          {client.company_name}
+        <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+          <span style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {client.company_name}
+          </span>
+          {/* PR 4: cross-tenant share badge. When the row's owning account
+              differs from the viewer's account, this client is reaching the
+              viewer via a client_shares grant. The list endpoint already
+              returns the owner's account_id + account_name (see
+              handle_list_clients). Super admins see every row (no badge —
+              they're not "shared with" anyone).
+              When user is super_admin or has no account_id, we suppress the
+              badge to avoid the false "shared from Intellagentic" on
+              Intellagentic's own list. */}
+          {user && user.account_id != null && !user.is_admin &&
+           user.account_role !== 'super_admin' &&
+           client.account_id != null && client.account_id !== user.account_id && (
+            <span title={`Owned by ${client.account_name || 'another account'}`}
+              style={{
+                fontSize: '0.65rem', fontWeight: 600,
+                padding: '0.1rem 0.4rem', borderRadius: 6,
+                background: 'rgba(15, 150, 156, 0.12)', color: '#0F969C',
+                whiteSpace: 'nowrap',
+              }}>
+              Shared from {client.account_name || 'partner'}
+            </span>
+          )}
         </span>
         {isAdmin && client.account_name && (
           <span style={{ fontSize: '0.6875rem', color: 'var(--text-muted, #9ca3af)', display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -1004,10 +1031,31 @@ function DashboardScreen({ onSelectClient, onCreateClient, isAdmin, isAccount, a
         }}
         onMouseEnter={e => e.currentTarget.style.color = '#3b82f6'}
         onMouseLeave={e => e.currentTarget.style.color = 'var(--text-muted, #9ca3af)'}
-        title="Share link"
+        title="Share link (magic link for client contact)"
       >
         <ExternalLink size={13} />
       </button>
+      {/* PR 4: cross-tenant share button. Visible only when user is
+          super_admin AND the client is owned by the user's account.
+          Different feature from the magic-link share above — this grants
+          another XO account access to the client via client_shares. */}
+      {user && (user.is_admin || user.account_role === 'super_admin')
+        && client.account_id != null && client.account_id === user.account_id && (
+        <button
+          data-hover-btn
+          onClick={(e) => { e.stopPropagation(); setShareWithClient(client) }}
+          style={{
+            background: 'none', border: 'none', cursor: 'pointer', padding: '0.2rem',
+            color: 'var(--text-muted, #9ca3af)', borderRadius: '4px', display: 'flex', flexShrink: 0,
+            opacity: 0, transition: 'opacity 0.15s'
+          }}
+          onMouseEnter={e => e.currentTarget.style.color = '#0F969C'}
+          onMouseLeave={e => e.currentTarget.style.color = 'var(--text-muted, #9ca3af)'}
+          title="Share with another XO account"
+        >
+          <Share2 size={13} />
+        </button>
+      )}
       {isAdmin && (
         <button
           data-hover-btn
@@ -1106,6 +1154,18 @@ function DashboardScreen({ onSelectClient, onCreateClient, isAdmin, isAccount, a
         <ShareLinkModal
           clientId={shareLinkClient.client_id}
           onClose={() => setShareLinkClient(null)}
+        />
+      )}
+
+      {/* PR 4: cross-tenant share modal */}
+      {shareWithClient && (
+        <ShareClientModal
+          apiBase={API_BASE}
+          getAuthHeaders={getAuthHeaders}
+          clientId={shareWithClient.id}
+          clientName={shareWithClient.company_name}
+          isSuperAdmin={!!(user && (user.is_admin || user.account_role === 'super_admin'))}
+          onClose={() => setShareWithClient(null)}
         />
       )}
 
@@ -2677,6 +2737,15 @@ export default function App() {
           {!['contributor', 'client_contact'].includes(user?.account_role) && (
             <SidebarItem screen="configuration" icon={Settings} label="Configuration" />
           )}
+          {/* PR 4: SF conflicts page — visible to admins; badge if unresolved > 0 */}
+          {(isAdmin || ['account_admin'].includes(user?.account_role)) && salesforceUnresolvedConflicts > 0 && (
+            <SidebarItem
+              screen="sf-conflicts"
+              icon={AlertTriangle}
+              label={`SF Conflicts (${salesforceUnresolvedConflicts})`}
+              color="#a16207"
+            />
+          )}
           {currentScreen !== 'dashboard' && clientId && !['contributor', 'client_contact'].includes(user?.account_role) && (
             <SidebarItem screen="branding" icon={Image} label="Branding" />
           )}
@@ -2830,6 +2899,7 @@ export default function App() {
             isAccount={isAccount}
             accounts={accounts}
             teamUsers={teamUsers}
+            user={user}
           />
         )}
         {currentScreen === 'upload' && (
@@ -2885,6 +2955,21 @@ export default function App() {
         {currentScreen === 'branding' && <BrandingScreen clientId={clientId} companyData={companyData} setCompanyData={setCompanyData} />}
         {currentScreen === 'accounts' && isAdmin && <AccountsScreen accounts={accounts} setAccounts={setAccounts} teamUsers={teamUsers} />}
         {currentScreen === 'team' && (isAdmin || user?.account_role === 'account_admin') && <TeamScreen isAdmin={isAdmin} user={user} accounts={accounts} teamUsers={teamUsers} setTeamUsers={setTeamUsers} />}
+        {currentScreen === 'sf-conflicts' && (isAdmin || user?.account_role === 'account_admin') && (
+          <SalesforceConflictsScreen
+            apiBase={API_BASE}
+            getAuthHeaders={getAuthHeaders}
+            onResolved={() => {
+              // Refresh status after a resolve so the sidebar count + header reflect reality.
+              fetch(`${API_BASE}/salesforce/status`, { headers: getAuthHeaders() })
+                .then(r => r.ok ? r.json() : null)
+                .then(d => {
+                  if (d) setSalesforceUnresolvedConflicts(d.unresolved_conflicts || 0)
+                })
+                .catch(() => {})
+            }}
+          />
+        )}
 
       </main>
 
@@ -8565,6 +8650,16 @@ function ConfigurationScreen({ theme, toggleTheme, buttons, setButtons, systemBu
   const [hubspotConnecting, setHubspotConnecting] = useState(false)
   const [hubspotStatusLoaded, setHubspotStatusLoaded] = useState(false)
   const [hubspotSyncResult, setHubspotSyncResult] = useState(null)
+  // Salesforce integration state (PR 4 — mirrors HubSpot pattern)
+  const [salesforceConnected, setSalesforceConnected] = useState(false)
+  const [salesforceInstanceUrl, setSalesforceInstanceUrl] = useState(null)
+  const [salesforceError, setSalesforceError] = useState(null)
+  const [salesforceLastPullAt, setSalesforceLastPullAt] = useState(null)
+  const [salesforceUnresolvedConflicts, setSalesforceUnresolvedConflicts] = useState(0)
+  const [salesforceConnecting, setSalesforceConnecting] = useState(false)
+  const [salesforcePulling, setSalesforcePulling] = useState(false)
+  const [salesforceStatusLoaded, setSalesforceStatusLoaded] = useState(false)
+  const [salesforceSyncResult, setSalesforceSyncResult] = useState(null)
 
   useEffect(() => {
     if (inWorkspace && clientId) {
@@ -8602,6 +8697,22 @@ function ConfigurationScreen({ theme, toggleTheme, buttons, setButtons, systemBu
         })
         .catch(() => {})
         .finally(() => setHubspotStatusLoaded(true))
+      // PR 4: Salesforce connection status + pull metadata + conflict count.
+      // Single roundtrip — backend returns {connected, instance_url, error,
+      // last_pull_at, unresolved_conflicts}.
+      fetch(`${API_BASE}/salesforce/status`, { headers: getAuthHeaders() })
+        .then(res => res.ok ? res.json() : null)
+        .then(data => {
+          if (data) {
+            setSalesforceConnected(!!data.connected)
+            setSalesforceInstanceUrl(data.instance_url || null)
+            setSalesforceError(data.error || null)
+            setSalesforceLastPullAt(data.last_pull_at || null)
+            setSalesforceUnresolvedConflicts(data.unresolved_conflicts || 0)
+          }
+        })
+        .catch(() => {})
+        .finally(() => setSalesforceStatusLoaded(true))
     } else {
       setWebhookLoaded(true)
     }
@@ -9394,6 +9505,246 @@ function ConfigurationScreen({ theme, toggleTheme, buttons, setButtons, systemBu
                     <div style={{ marginTop: '0.5rem', padding: '0.5rem 0.75rem', borderRadius: 8, fontSize: '0.75rem', background: hubspotSyncResult.success ? '#f0fdf4' : '#fef2f2', color: hubspotSyncResult.success ? '#166534' : '#991b1b', border: `1px solid ${hubspotSyncResult.success ? '#22c55e' : '#dc2626'}` }}>
                       {hubspotSyncResult.success ? <CheckCircle size={14} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 4 }} /> : <AlertTriangle size={14} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 4 }} />}
                       {hubspotSyncResult.msg}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ── Salesforce Integration (PR 4) ── */}
+          <div className="config-panel">
+            <div className="panel-header">
+              <div className="panel-header-left">
+                <Cloud size={20} className="icon-red" />
+                <h2>Salesforce Integration</h2>
+              </div>
+              {salesforceStatusLoaded && (
+                <span style={{
+                  fontSize: '0.7rem',
+                  fontWeight: 600,
+                  padding: '0.2rem 0.6rem',
+                  borderRadius: 12,
+                  background: salesforceConnected ? 'rgba(34, 197, 94, 0.15)' :
+                              (salesforceError === 'token_expired' ? 'rgba(234, 179, 8, 0.15)' : 'rgba(220, 38, 38, 0.1)'),
+                  color: salesforceConnected ? '#22c55e' :
+                         (salesforceError === 'token_expired' ? '#a16207' : '#dc2626'),
+                }}>
+                  {salesforceConnected ? 'Connected' :
+                   (salesforceError === 'token_expired' ? 'Token expired' : 'Disconnected')}
+                </span>
+              )}
+            </div>
+            <div style={{ padding: '1.25rem' }}>
+              <p style={{ fontSize: '0.75rem', color: C.muted, marginBottom: '0.75rem', lineHeight: 1.4 }}>
+                Bi-directional sync with Salesforce. Per-tenant — each account connects its own SF org. Pull and webhook deliver Account, Contact, and Opportunity changes into XO; push sends XO clients + engagement summaries to SF.
+              </p>
+
+              {salesforceError === 'token_expired' && (
+                <div style={{
+                  padding: '0.5rem 0.75rem', marginBottom: '0.75rem',
+                  background: '#fefce8', color: '#854d0e',
+                  border: '1px solid #eab308', borderRadius: 8,
+                  fontSize: '0.75rem',
+                }}>
+                  <AlertTriangle size={14} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 4 }} />
+                  Salesforce session expired — reconnect to resume sync.
+                </div>
+              )}
+
+              {!salesforceConnected && (
+                <button
+                  onClick={async () => {
+                    setSalesforceConnecting(true)
+                    try {
+                      const res = await fetch(`${API_BASE}/salesforce/connect`, {
+                        method: 'POST',
+                        headers: getAuthHeaders(),
+                      })
+                      const data = await res.json()
+                      if (res.ok && data.auth_url) {
+                        // Open SF authorize URL in a new window. The backend
+                        // handles the OAuth callback (consumes nonce, stores
+                        // tokens) and returns a self-closing HTML page. Poll
+                        // /salesforce/status after the window closes.
+                        const popup = window.open(data.auth_url, '_blank', 'width=600,height=750')
+                        const pollStatus = setInterval(() => {
+                          if (popup && popup.closed) {
+                            clearInterval(pollStatus)
+                            fetch(`${API_BASE}/salesforce/status`, { headers: getAuthHeaders() })
+                              .then(r => r.ok ? r.json() : null)
+                              .then(d => {
+                                if (d) {
+                                  setSalesforceConnected(!!d.connected)
+                                  setSalesforceInstanceUrl(d.instance_url || null)
+                                  setSalesforceError(d.error || null)
+                                  setSalesforceLastPullAt(d.last_pull_at || null)
+                                  setSalesforceUnresolvedConflicts(d.unresolved_conflicts || 0)
+                                }
+                                setSalesforceConnecting(false)
+                              })
+                              .catch(() => setSalesforceConnecting(false))
+                          }
+                        }, 800)
+                      } else {
+                        alert(data.error || 'Failed to initiate Salesforce connection')
+                        setSalesforceConnecting(false)
+                      }
+                    } catch (err) {
+                      alert('Failed to connect: ' + err.message)
+                      setSalesforceConnecting(false)
+                    }
+                  }}
+                  disabled={salesforceConnecting}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: '0.5rem',
+                    padding: '0.625rem 1.25rem',
+                    background: '#00a1e0', color: '#fff',
+                    border: 'none', borderRadius: 8, fontSize: '0.85rem',
+                    fontWeight: 600, cursor: salesforceConnecting ? 'wait' : 'pointer',
+                    opacity: salesforceConnecting ? 0.7 : 1,
+                  }}
+                >
+                  {salesforceConnecting ? <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /> : <Link size={16} />}
+                  {salesforceConnecting ? 'Connecting...' : (salesforceError === 'token_expired' ? 'Reconnect Salesforce' : 'Connect Salesforce')}
+                </button>
+              )}
+
+              {salesforceConnected && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                  {salesforceInstanceUrl && (
+                    <div style={{
+                      padding: '0.5rem 0.75rem',
+                      background: `${C.muted}10`,
+                      borderRadius: 8, border: `1px solid ${C.border}`,
+                      fontSize: '0.75rem', color: C.muted,
+                    }}>
+                      <span style={{ fontWeight: 600 }}>Org:</span>{' '}
+                      <a href={salesforceInstanceUrl} target="_blank" rel="noopener noreferrer"
+                         style={{ color: C.muted }}>
+                        {salesforceInstanceUrl.replace(/^https?:\/\//, '')}
+                      </a>
+                    </div>
+                  )}
+                  {salesforceLastPullAt && (
+                    <div style={{
+                      padding: '0.5rem 0.75rem',
+                      background: `${C.muted}10`,
+                      borderRadius: 8, border: `1px solid ${C.border}`,
+                      fontSize: '0.75rem', color: C.muted,
+                    }}>
+                      <span style={{ fontWeight: 600 }}>Last pull:</span>{' '}
+                      {new Date(salesforceLastPullAt).toLocaleString()}
+                    </div>
+                  )}
+                  {salesforceUnresolvedConflicts > 0 && (
+                    <button
+                      onClick={() => setCurrentScreen('sf-conflicts')}
+                      style={{
+                        padding: '0.5rem 0.75rem',
+                        background: '#fefce8', color: '#854d0e',
+                        border: '1px solid #eab308', borderRadius: 8,
+                        fontSize: '0.75rem', cursor: 'pointer',
+                        textAlign: 'left',
+                      }}
+                    >
+                      <AlertTriangle size={14} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 4 }} />
+                      {salesforceUnresolvedConflicts} unresolved conflict{salesforceUnresolvedConflicts === 1 ? '' : 's'} — open conflicts page
+                    </button>
+                  )}
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button
+                      onClick={async () => {
+                        setSalesforcePulling(true)
+                        try {
+                          const res = await fetch(`${API_BASE}/salesforce/sync/pull`, {
+                            method: 'POST', headers: getAuthHeaders(),
+                          })
+                          const data = await res.json()
+                          if (res.ok && data.pulled) {
+                            const a = data.accounts || {}
+                            const c = data.contacts || {}
+                            const o = data.opportunities || {}
+                            setSalesforceSyncResult({
+                              success: true,
+                              msg: `Accounts: ${a.pulled || 0} updated, ${a.created || 0} new. ` +
+                                   `Contacts: ${c.inserted || 0} new, ${c.pulled || 0} updated. ` +
+                                   `Opportunities: ${o.pulled || 0} updated, ${o.created || 0} new.`,
+                            })
+                            // Refresh status to pick up new last_pull_at + conflict count.
+                            fetch(`${API_BASE}/salesforce/status`, { headers: getAuthHeaders() })
+                              .then(r => r.ok ? r.json() : null)
+                              .then(d => {
+                                if (d) {
+                                  setSalesforceLastPullAt(d.last_pull_at || null)
+                                  setSalesforceUnresolvedConflicts(d.unresolved_conflicts || 0)
+                                }
+                              })
+                              .catch(() => {})
+                          } else {
+                            setSalesforceSyncResult({ success: false, msg: data.error || 'Pull returned an unexpected response' })
+                          }
+                        } catch (err) {
+                          setSalesforceSyncResult({ success: false, msg: 'Pull request failed: ' + err.message })
+                        }
+                        setSalesforcePulling(false)
+                        setTimeout(() => setSalesforceSyncResult(null), 8000)
+                      }}
+                      disabled={salesforcePulling}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: '0.5rem',
+                        padding: '0.625rem 1.25rem',
+                        background: '#00a1e0', color: '#fff',
+                        border: 'none', borderRadius: 8, fontSize: '0.85rem',
+                        fontWeight: 600, cursor: salesforcePulling ? 'wait' : 'pointer',
+                        opacity: salesforcePulling ? 0.7 : 1,
+                      }}
+                    >
+                      {salesforcePulling ? <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /> : <RefreshCw size={16} />}
+                      {salesforcePulling ? 'Pulling...' : 'Pull from Salesforce'}
+                    </button>
+                    <button
+                      onClick={async () => {
+                        if (!confirm('Disconnect Salesforce? Tokens will be cleared from this account.')) return
+                        try {
+                          const res = await fetch(`${API_BASE}/salesforce/disconnect`, {
+                            method: 'POST', headers: getAuthHeaders(),
+                          })
+                          if (res.ok) {
+                            setSalesforceConnected(false)
+                            setSalesforceInstanceUrl(null)
+                            setSalesforceError(null)
+                          } else {
+                            const data = await res.json()
+                            alert(data.error || 'Failed to disconnect')
+                          }
+                        } catch (err) {
+                          alert('Disconnect failed: ' + err.message)
+                        }
+                      }}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: '0.5rem',
+                        padding: '0.625rem 1.25rem',
+                        background: 'transparent', color: C.muted,
+                        border: `1px solid ${C.border}`, borderRadius: 8,
+                        fontSize: '0.85rem', fontWeight: 600, cursor: 'pointer',
+                      }}
+                    >
+                      Disconnect
+                    </button>
+                  </div>
+                  {salesforceSyncResult && (
+                    <div style={{
+                      marginTop: '0.5rem', padding: '0.5rem 0.75rem',
+                      borderRadius: 8, fontSize: '0.75rem',
+                      background: salesforceSyncResult.success ? '#f0fdf4' : '#fef2f2',
+                      color: salesforceSyncResult.success ? '#166534' : '#991b1b',
+                      border: `1px solid ${salesforceSyncResult.success ? '#22c55e' : '#dc2626'}`,
+                    }}>
+                      {salesforceSyncResult.success
+                        ? <CheckCircle size={14} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 4 }} />
+                        : <AlertTriangle size={14} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 4 }} />}
+                      {salesforceSyncResult.msg}
                     </div>
                   )}
                 </div>
@@ -12458,6 +12809,454 @@ function ResultsScreen({ setShowModal, clientId, isAdmin,systemButtons,theme,pre
         </div>
       )}
 
+    </div>
+  )
+}
+
+
+// ============================================================
+// SALESFORCE CONFLICTS SCREEN (PR 4)
+// Lists unresolved conflicts from salesforce_sync_log scoped to the
+// user's account. Each row expands to show per-field xo/sf diffs.
+// Resolve buttons hit POST /salesforce/conflicts/{log_id}/resolve.
+// ============================================================
+function SalesforceConflictsScreen({ apiBase, getAuthHeaders, onResolved }) {
+  const [conflicts, setConflicts] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [expanded, setExpanded] = useState({})
+  const [resolving, setResolving] = useState({})
+  const [error, setError] = useState(null)
+
+  const fetchConflicts = () => {
+    setLoading(true)
+    fetch(`${apiBase}/salesforce/conflicts`, { headers: getAuthHeaders() })
+      .then(r => r.ok ? r.json() : Promise.reject(r))
+      .then(d => setConflicts(d.conflicts || []))
+      .catch(err => setError(typeof err === 'string' ? err : 'Failed to load conflicts'))
+      .finally(() => setLoading(false))
+  }
+
+  useEffect(() => { fetchConflicts() }, [])
+
+  const resolve = async (logId, resolution) => {
+    setResolving(s => ({ ...s, [logId]: resolution }))
+    try {
+      const res = await fetch(`${apiBase}/salesforce/conflicts/${logId}/resolve`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ resolution }),
+      })
+      const data = await res.json()
+      if (res.ok) {
+        setConflicts(cs => cs.filter(c => c.id !== logId))
+        if (onResolved) onResolved()
+      } else {
+        alert(data.error || 'Resolve failed')
+      }
+    } catch (err) {
+      alert('Resolve failed: ' + err.message)
+    }
+    setResolving(s => {
+      const next = { ...s }
+      delete next[logId]
+      return next
+    })
+  }
+
+  return (
+    <div style={{ padding: '2rem', maxWidth: 980, margin: '0 auto' }}>
+      <h1 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: '0.5rem' }}>
+        Salesforce Conflicts
+      </h1>
+      <p style={{ color: 'var(--text-muted, #6b7280)', fontSize: '0.875rem', marginBottom: '1.5rem' }}>
+        Rows where XO and Salesforce both changed the same field since the last sync.
+        Choose to keep XO's values (pushed back to SF) or take SF's values (pulled into XO).
+      </p>
+
+      {loading && (
+        <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted, #6b7280)' }}>
+          <Loader2 size={20} style={{ animation: 'spin 1s linear infinite' }} /> Loading...
+        </div>
+      )}
+
+      {!loading && error && (
+        <div style={{ padding: '1rem', background: '#fef2f2', color: '#991b1b', border: '1px solid #dc2626', borderRadius: 8 }}>
+          {error}
+        </div>
+      )}
+
+      {!loading && !error && conflicts.length === 0 && (
+        <div style={{ padding: '2rem', textAlign: 'center', background: '#f0fdf4', color: '#166534', border: '1px solid #22c55e', borderRadius: 8 }}>
+          <CheckCircle size={24} style={{ marginBottom: '0.5rem' }} />
+          <div style={{ fontSize: '0.9rem', fontWeight: 600 }}>No unresolved conflicts.</div>
+        </div>
+      )}
+
+      {!loading && !error && conflicts.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+          {conflicts.map(c => {
+            const isOpen = !!expanded[c.id]
+            const r = resolving[c.id]
+            return (
+              <div key={c.id} style={{
+                border: '1px solid var(--border-color, #e5e7eb)',
+                borderRadius: 10,
+                background: 'var(--card-bg, #fff)',
+                overflow: 'hidden',
+              }}>
+                <button
+                  onClick={() => setExpanded(s => ({ ...s, [c.id]: !isOpen }))}
+                  style={{
+                    width: '100%', textAlign: 'left', cursor: 'pointer',
+                    background: 'transparent', border: 'none', padding: '1rem',
+                    display: 'flex', alignItems: 'center', gap: '0.75rem',
+                    color: 'var(--text-primary, #111)',
+                  }}
+                >
+                  {isOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: '0.95rem', fontWeight: 600 }}>
+                      {c.record_label || `(unnamed ${c.record_type})`}
+                      <span style={{
+                        marginLeft: '0.75rem',
+                        fontSize: '0.7rem', fontWeight: 500,
+                        padding: '0.15rem 0.5rem', borderRadius: 8,
+                        background: 'rgba(220, 38, 38, 0.1)', color: '#dc2626',
+                      }}>
+                        {c.record_type}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted, #6b7280)', marginTop: 2 }}>
+                      {(c.fields_skipped || []).length} conflicting{' '}
+                      {c.record_type === 'client' && (c.fields_skipped || []).some(f => /@/.test(f))
+                        ? 'contact(s)' : 'field(s)'}
+                      {c.synced_at && (
+                        <> · {new Date(c.synced_at).toLocaleString()}</>
+                      )}
+                    </div>
+                  </div>
+                </button>
+
+                {isOpen && (
+                  <div style={{ padding: '0 1rem 1rem 2.5rem', borderTop: '1px solid var(--border-color, #e5e7eb)' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem', marginTop: '0.75rem' }}>
+                      <thead>
+                        <tr style={{ textAlign: 'left', color: 'var(--text-muted, #6b7280)' }}>
+                          {c.record_type === 'client' && c.details?.[0]?.email && (
+                            <th style={{ padding: '0.4rem 0.75rem 0.4rem 0' }}>Contact</th>
+                          )}
+                          <th style={{ padding: '0.4rem 0.75rem 0.4rem 0' }}>Field</th>
+                          <th style={{ padding: '0.4rem 0.75rem 0.4rem 0' }}>XO value</th>
+                          <th style={{ padding: '0.4rem 0' }}>SF value</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(c.details || []).map((d, i) => (
+                          <tr key={i} style={{ borderTop: '1px solid var(--border-color, #e5e7eb)' }}>
+                            {c.record_type === 'client' && c.details?.[0]?.email && (
+                              <td style={{ padding: '0.4rem 0.75rem 0.4rem 0', fontFamily: 'monospace' }}>{d.email || ''}</td>
+                            )}
+                            <td style={{ padding: '0.4rem 0.75rem 0.4rem 0', fontWeight: 500 }}>{d.field || ''}</td>
+                            <td style={{ padding: '0.4rem 0.75rem 0.4rem 0', color: '#0F969C' }}>
+                              {d.xo_value !== undefined && d.xo_value !== null ? String(d.xo_value) : '—'}
+                            </td>
+                            <td style={{ padding: '0.4rem 0', color: '#00a1e0' }}>
+                              {d.sf_value !== undefined && d.sf_value !== null ? String(d.sf_value) : '—'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+
+                    <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem' }}>
+                      <button
+                        onClick={() => resolve(c.id, 'keep_xo')}
+                        disabled={!!r}
+                        style={{
+                          padding: '0.5rem 1rem', background: '#0F969C', color: '#fff',
+                          border: 'none', borderRadius: 8, fontSize: '0.8rem', fontWeight: 600,
+                          cursor: r ? 'wait' : 'pointer', opacity: r ? 0.7 : 1,
+                        }}
+                      >
+                        {r === 'keep_xo' ? 'Pushing to SF...' : 'Keep XO (push to SF)'}
+                      </button>
+                      <button
+                        onClick={() => resolve(c.id, 'take_sf')}
+                        disabled={!!r}
+                        style={{
+                          padding: '0.5rem 1rem', background: '#00a1e0', color: '#fff',
+                          border: 'none', borderRadius: 8, fontSize: '0.8rem', fontWeight: 600,
+                          cursor: r ? 'wait' : 'pointer', opacity: r ? 0.7 : 1,
+                        }}
+                      >
+                        {r === 'take_sf' ? 'Pulling from SF...' : 'Take SF (pull into XO)'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+
+// ============================================================
+// SALESFORCE SHARE-CLIENT MODAL (PR 4)
+// Triggered from client list / detail. Grants account-level share via
+// POST /clients/{id}/shares. Lists current grants with Revoke.
+// Recipient picker: super_admin sees full /accounts list; non-super
+// admins see no picker (per Ken's 1A: Monday workflow has super_admin
+// doing the share TO Intellistack).
+// ============================================================
+function ShareClientModal({ apiBase, getAuthHeaders, clientId, clientName, isSuperAdmin, onClose }) {
+  const [accounts, setAccounts] = useState([])
+  const [shares, setShares] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [granting, setGranting] = useState(false)
+  const [recipient, setRecipient] = useState('')
+  const [permissions, setPermissions] = useState('read_write')
+  const [error, setError] = useState(null)
+  const [toast, setToast] = useState(null)
+
+  const refresh = () => {
+    setLoading(true)
+    Promise.all([
+      isSuperAdmin
+        ? fetch(`${apiBase}/accounts`, { headers: getAuthHeaders() })
+            .then(r => r.ok ? r.json() : { accounts: [] })
+            .catch(() => ({ accounts: [] }))
+        : Promise.resolve({ accounts: [] }),
+      fetch(`${apiBase}/clients/${clientId}/shares`, { headers: getAuthHeaders() })
+        .then(r => r.ok ? r.json() : { shares: [] })
+        .catch(() => ({ shares: [] })),
+    ])
+      .then(([aRes, sRes]) => {
+        setAccounts(aRes.accounts || aRes || [])
+        setShares(sRes.shares || [])
+      })
+      .finally(() => setLoading(false))
+  }
+
+  useEffect(() => { refresh() }, [clientId])
+
+  const grant = async () => {
+    if (!recipient) {
+      setError('Pick an account to share with.')
+      return
+    }
+    setGranting(true)
+    setError(null)
+    try {
+      const res = await fetch(`${apiBase}/clients/${clientId}/shares`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          account_id: parseInt(recipient, 10),
+          permissions,
+        }),
+      })
+      const data = await res.json()
+      if (res.ok) {
+        setToast(`Shared with ${accounts.find(a => String(a.id) === String(recipient))?.name || 'account'}`)
+        setTimeout(() => setToast(null), 4000)
+        setRecipient('')
+        refresh()
+      } else {
+        setError(data.error || 'Grant failed')
+      }
+    } catch (err) {
+      setError('Grant failed: ' + err.message)
+    }
+    setGranting(false)
+  }
+
+  const revoke = async (recipientAccountId) => {
+    if (!confirm('Revoke this share?')) return
+    try {
+      const res = await fetch(`${apiBase}/clients/${clientId}/shares/${recipientAccountId}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders(),
+      })
+      if (res.ok) {
+        refresh()
+        setToast('Revoked')
+        setTimeout(() => setToast(null), 4000)
+      } else {
+        const data = await res.json()
+        alert(data.error || 'Revoke failed')
+      }
+    } catch (err) {
+      alert('Revoke failed: ' + err.message)
+    }
+  }
+
+  // Filter the accounts dropdown to exclude already-shared accounts.
+  const sharedIds = new Set(shares.map(s => s.shared_with_account_id))
+  const availableAccounts = accounts.filter(a => !sharedIds.has(a.id))
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      zIndex: 1000, padding: '1rem',
+    }}>
+      <div style={{
+        background: 'var(--card-bg, #fff)',
+        borderRadius: 12, padding: 0,
+        maxWidth: 560, width: '100%', maxHeight: '85vh',
+        overflowY: 'auto', boxShadow: '0 20px 50px rgba(0,0,0,0.3)',
+      }}>
+        <div style={{
+          padding: '1rem 1.25rem',
+          borderBottom: '1px solid var(--border-color, #e5e7eb)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        }}>
+          <h2 style={{ fontSize: '1.1rem', fontWeight: 700, margin: 0 }}>
+            <Share2 size={18} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 8 }} />
+            Share {clientName || 'client'}
+          </h2>
+          <button onClick={onClose} style={{
+            background: 'transparent', border: 'none', cursor: 'pointer',
+            color: 'var(--text-muted, #6b7280)', padding: '0.25rem',
+          }}>
+            <X size={20} />
+          </button>
+        </div>
+
+        <div style={{ padding: '1.25rem' }}>
+          {!isSuperAdmin && (
+            <div style={{
+              padding: '0.75rem 1rem', marginBottom: '1rem',
+              background: '#fefce8', color: '#854d0e', borderRadius: 8,
+              border: '1px solid #eab308', fontSize: '0.8rem',
+            }}>
+              You're not a super admin — only super admins can grant new shares
+              in this UI. Existing shares for this client are listed below.
+            </div>
+          )}
+
+          {isSuperAdmin && (
+            <div style={{ marginBottom: '1.5rem' }}>
+              <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted, #6b7280)', textTransform: 'uppercase' }}>
+                Share with account
+              </label>
+              <select
+                value={recipient}
+                onChange={(e) => setRecipient(e.target.value)}
+                style={{
+                  width: '100%', marginTop: '0.4rem', padding: '0.5rem',
+                  border: '1px solid var(--border-color, #e5e7eb)', borderRadius: 8,
+                  fontSize: '0.875rem', background: 'var(--card-bg, #fff)',
+                  color: 'var(--text-primary, #111)',
+                }}
+                disabled={loading || granting}
+              >
+                <option value="">— Pick an account —</option>
+                {availableAccounts.map(a => (
+                  <option key={a.id} value={a.id}>{a.name}</option>
+                ))}
+              </select>
+
+              <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted, #6b7280)', textTransform: 'uppercase', display: 'block', marginTop: '1rem' }}>
+                Permissions
+              </label>
+              <div style={{ display: 'flex', gap: '1rem', marginTop: '0.4rem' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem', cursor: 'pointer' }}>
+                  <input type="radio" name="perm" value="read_write" checked={permissions === 'read_write'} onChange={() => setPermissions('read_write')} />
+                  Read &amp; write
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem', cursor: 'pointer' }}>
+                  <input type="radio" name="perm" value="read_only" checked={permissions === 'read_only'} onChange={() => setPermissions('read_only')} />
+                  Read only
+                </label>
+              </div>
+
+              {error && (
+                <div style={{ marginTop: '0.75rem', padding: '0.5rem 0.75rem', background: '#fef2f2', color: '#991b1b', borderRadius: 8, fontSize: '0.8rem' }}>
+                  {error}
+                </div>
+              )}
+
+              <button
+                onClick={grant}
+                disabled={!recipient || granting}
+                style={{
+                  marginTop: '1rem',
+                  padding: '0.625rem 1.25rem',
+                  background: recipient ? '#0F969C' : '#cbd5e1', color: '#fff',
+                  border: 'none', borderRadius: 8, fontSize: '0.85rem', fontWeight: 600,
+                  cursor: (recipient && !granting) ? 'pointer' : 'not-allowed',
+                }}
+              >
+                {granting ? 'Sharing...' : 'Share'}
+              </button>
+            </div>
+          )}
+
+          <div style={{ borderTop: '1px solid var(--border-color, #e5e7eb)', paddingTop: '1rem' }}>
+            <h3 style={{ fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.75rem', color: 'var(--text-primary, #111)' }}>
+              Current shares
+            </h3>
+            {loading && (
+              <p style={{ fontSize: '0.8rem', color: 'var(--text-muted, #6b7280)' }}>Loading...</p>
+            )}
+            {!loading && shares.length === 0 && (
+              <p style={{ fontSize: '0.8rem', color: 'var(--text-muted, #6b7280)' }}>
+                No shares yet.
+              </p>
+            )}
+            {!loading && shares.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                {shares.map(s => {
+                  const acctName = accounts.find(a => a.id === s.shared_with_account_id)?.name || `Account #${s.shared_with_account_id}`
+                  return (
+                    <div key={s.shared_with_account_id} style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                      padding: '0.6rem 0.8rem',
+                      background: 'var(--bg-secondary, #f9fafb)',
+                      borderRadius: 8, border: '1px solid var(--border-color, #e5e7eb)',
+                    }}>
+                      <div>
+                        <div style={{ fontSize: '0.85rem', fontWeight: 600 }}>{acctName}</div>
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted, #6b7280)' }}>
+                          {s.permissions === 'read_write' ? 'Read &amp; write' : 'Read only'}
+                          {s.granted_at && <> · granted {new Date(s.granted_at).toLocaleDateString()}</>}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => revoke(s.shared_with_account_id)}
+                        style={{
+                          padding: '0.3rem 0.6rem',
+                          background: 'transparent', color: '#dc2626',
+                          border: '1px solid #dc2626', borderRadius: 6,
+                          fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer',
+                        }}
+                      >
+                        Revoke
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          {toast && (
+            <div style={{
+              marginTop: '1rem', padding: '0.5rem 0.75rem',
+              background: '#f0fdf4', color: '#166534', borderRadius: 8,
+              border: '1px solid #22c55e', fontSize: '0.8rem',
+            }}>
+              <CheckCircle size={14} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 4 }} />
+              {toast}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   )
 }
