@@ -20,6 +20,7 @@ pip3 install -r requirements.txt -t package/ --quiet \
 cp lambda_function.py package/
 cp ../shared/auth_helper.py package/
 cp ../shared/crypto_helper.py package/
+cp ../shared/client_access.py package/
 
 # Create zip
 cd package

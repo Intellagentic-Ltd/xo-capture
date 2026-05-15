@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 
 from integrations_config import get_account_config, set_account_config
 from sf_client import sf_call_with_refresh, soql_escape
+from client_access import clients_where_fragment
 
 logger = logging.getLogger('xo.salesforce.pull')
 logger.setLevel(logging.INFO)
@@ -234,15 +235,27 @@ def _reconcile_account(conn, account_id, sf_account):
     """
     cur = conn.cursor()
     try:
-        # Match by direct link first, then by company name (case-insensitive).
+        # PR 3.4b: share-aware match. The actor account (Intellistack)
+        # can reconcile against clients it OWNS or against clients shared
+        # with it (e.g. Acme co-sell with Intellagentic). Construct a
+        # synthetic account_admin user so the shared helper gives us the
+        # owned-OR-shared fragment uniformly with every other lambda.
+        synthetic_user = {
+            'account_role': 'account_admin',
+            'account_id': account_id,
+            'is_admin': False,
+            'user_id': None, 'is_account': False, 'is_client': False,
+            'client_id': None,
+        }
+        access_frag, access_params = clients_where_fragment(synthetic_user, alias='clients')
         cur.execute(
-            """SELECT id, company_name, website_url, industry, description,
+            f"""SELECT id, company_name, website_url, industry, description,
                       updated_at, salesforce_last_sync
                FROM clients
-               WHERE account_id = %s
+               WHERE ({access_frag})
                AND (salesforce_account_id = %s OR LOWER(company_name) = LOWER(%s))
                LIMIT 1""",
-            (account_id, sf_account['Id'], sf_account.get('Name') or ''),
+            access_params + (sf_account['Id'], sf_account.get('Name') or ''),
         )
         row = cur.fetchone()
     finally:

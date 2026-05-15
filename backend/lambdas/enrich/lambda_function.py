@@ -21,6 +21,7 @@ import io
 import csv
 from datetime import datetime, timezone
 from auth_helper import require_auth, get_db_connection, CORS_HEADERS, log_activity
+from client_access import clients_where_fragment
 from preprocess_per_document import (
     STAGE1_PROMPT_VERSION,
     Stage1FailedError,
@@ -201,22 +202,16 @@ def _handle_enrich_request(event, user):
         model_to_use = requested_model if requested_model in allowed_models else db_model
         print(f"Using model: {model_to_use}")
 
-        is_admin = user.get('is_admin', False) or user.get('role') == 'admin'
-
-        if is_admin:
-            cur.execute("""
-                SELECT company_name, website_url, contact_name, contact_title,
-                       contact_linkedin, industry, description, pain_point, id, user_id
-                FROM clients
-                WHERE s3_folder = %s
-            """, (client_id,))
-        else:
-            cur.execute("""
-                SELECT company_name, website_url, contact_name, contact_title,
-                       contact_linkedin, industry, description, pain_point, id, user_id
-                FROM clients
-                WHERE s3_folder = %s AND user_id = %s
-            """, (client_id, user['user_id']))
+        # PR 3.4b: share-aware access via shared/client_access fragment.
+        # Account_admin recipient with a read_write share on this client
+        # can trigger enrichment — same as owner.
+        frag, frag_params = clients_where_fragment(user, alias='c')
+        cur.execute(f"""
+            SELECT c.company_name, c.website_url, c.contact_name, c.contact_title,
+                   c.contact_linkedin, c.industry, c.description, c.pain_point, c.id, c.user_id
+            FROM clients c
+            WHERE c.s3_folder = %s AND ({frag})
+        """, (client_id,) + frag_params)
 
         row = cur.fetchone()
         if not row:
@@ -225,10 +220,10 @@ def _handle_enrich_request(event, user):
             return {
                 'statusCode': 404,
                 'headers': CORS_HEADERS,
-                'body': json.dumps({'error': 'Client not found'})
+                'body': json.dumps({'error': 'Client not found or not accessible'})
             }
 
-        if is_admin and str(row[9]) != user['user_id']:
+        if user.get('is_admin') and str(row[9]) != user['user_id']:
             print(f"Admin bypass: user {user.get('email')} enriching client {client_id} owned by {row[9]}")
 
         db_client_id = str(row[8])
@@ -665,7 +660,9 @@ def _handle_send_to_streamline(event):
         conn = get_db_connection()
         cur = conn.cursor()
 
-        cur.execute("""
+        # PR 3.4b: share-aware access.
+        frag, frag_params = clients_where_fragment(user, alias='c')
+        cur.execute(f"""
             SELECT c.company_name, c.contact_name, c.contact_title, c.id,
                    e.results_s3_key, c.logo_s3_key, c.icon_s3_key,
                    c.contact_email, c.contact_phone, c.contacts_json,
@@ -673,10 +670,10 @@ def _handle_send_to_streamline(event):
                    c.encryption_key
             FROM clients c
             LEFT JOIN enrichments e ON e.client_id = c.id AND e.status = 'complete'
-            WHERE c.s3_folder = %s AND c.user_id = %s
+            WHERE c.s3_folder = %s AND ({frag})
             ORDER BY e.completed_at DESC
             LIMIT 1
-        """, (client_id, user['user_id']))
+        """, (client_id,) + frag_params)
 
         row = cur.fetchone()
 

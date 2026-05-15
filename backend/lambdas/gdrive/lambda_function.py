@@ -19,6 +19,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
 from auth_helper import require_auth, get_db_connection, CORS_HEADERS, log_activity
+from client_access import clients_where_fragment
 try:
     from crypto_helper import encrypt, decrypt, unwrap_client_key, encrypt_s3_bytes, maybe_encrypt_s3_bytes, is_s3_encryption_enabled
 except ImportError:
@@ -276,12 +277,17 @@ def handle_import(event):
                 'body': json.dumps({'error': 'file_ids and client_id are required'})
             }
 
-        # Verify client ownership and get s3_folder
+        # PR 3.4b: share-aware access. account_admin in a recipient account
+        # with a read_write share on this client can import Google Drive files
+        # to it. Read-only share is sufficient for the SELECT here — the
+        # write happens to S3 (the client's folder), not the clients row.
         conn = get_db_connection()
         cur = conn.cursor()
+        frag, frag_params = clients_where_fragment(user, alias='c')
         cur.execute(
-            "SELECT s3_folder, encryption_key FROM clients WHERE id = %s AND user_id = %s",
-            (client_id, user['user_id'])
+            f"SELECT c.s3_folder, c.encryption_key FROM clients c "
+            f"WHERE c.id = %s AND ({frag})",
+            (client_id,) + frag_params,
         )
         row = cur.fetchone()
         if not row:
@@ -290,7 +296,7 @@ def handle_import(event):
             return {
                 'statusCode': 403,
                 'headers': CORS_HEADERS,
-                'body': json.dumps({'error': 'Client not found or not owned by user'})
+                'body': json.dumps({'error': 'Client not found or not accessible'})
             }
         s3_folder = row[0]
         ck = unwrap_client_key(row[1]) if row[1] else None

@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 import requests
 
 from auth_helper import require_auth, get_db_connection, CORS_HEADERS, log_activity
+from client_access import can_user_access_client
 try:
     from crypto_helper import (
         encrypt, decrypt, unwrap_client_key,
@@ -1711,6 +1712,15 @@ def handle_sync_push(event, user):
                 'statusCode': 401,
                 'headers': CORS_HEADERS,
                 'body': json.dumps({'error': 'HubSpot not connected'})
+            }
+
+        # PR 3.4b: share-aware write access. account_admin in a recipient
+        # account with read_write share can push their view of the client.
+        if not can_user_access_client(conn, user, client_id, write=True):
+            return {
+                'statusCode': 403,
+                'headers': CORS_HEADERS,
+                'body': json.dumps({'error': 'Client not accessible or share is read-only'}),
             }
 
         cur = conn.cursor()

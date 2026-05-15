@@ -599,9 +599,13 @@ class TestShareApiGrant:
         """LOAD-BEARING: an account_admin in the RECIPIENT account cannot
         re-grant the same client onward. Only the owning account can grant."""
         started, _, mock_cur, _ = mock_deps
-        # ACCOUNT_ADMIN_USER is account 2; client owned by 99 (different).
+        # Scenario: ACCOUNT_ADMIN_USER (whatever account they are in, per
+        # conftest) is acting as the RECIPIENT of a share — i.e., the
+        # client they are touching is owned by a DIFFERENT account. The
+        # mock returns RECIPIENT_ACCOUNT (99) as the owning account_id so
+        # _require_admin_in_owning_account sees user.account_id != owning
+        # and rejects with the "OWNING account" error.
         started['require_auth'].return_value = (ACCOUNT_ADMIN_USER, None)
-        # _require_admin_in_owning_account: SELECT account_id → 99 (not user's 2)
         mock_cur.fetchone.return_value = (RECIPIENT_ACCOUNT,)
         event = _share_event('POST', body={'account_id': 12345,
                                            'permissions': 'read_write'})
