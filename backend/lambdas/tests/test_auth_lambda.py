@@ -49,6 +49,114 @@ def auth_module():
                 del sys.modules['lambda_function']
 
 
+# ──────────────────────────────────────────────
+# PR 3.4 — UCA cross-account relaxation
+# handle_set_user_clients validates every client_id: same-account is
+# accepted; cross-account requires a client_shares grant. Unauthorized
+# cross-account assignments are rejected explicitly (was silently
+# swallowed in a bare except before).
+# ──────────────────────────────────────────────
+
+class TestUcaCrossAccountAssignment:
+    def _setup_caller_and_target(self, mock_cur, target_account_id):
+        """Mock _verify_invite_caller's SELECT (returns an account_admin in
+        the same account) + the target user SELECT (returns target's account)."""
+        # _verify_invite_caller decodes a JWT; we patch require_auth equivalent
+        # via the auth lambda's direct DB-based caller check.
+        pass
+
+    def test_same_account_assignment_succeeds(self, auth_module, mock_db):
+        """Baseline: same-tenant assignment goes through unchanged."""
+        _, mock_conn, mock_cur = mock_db
+        # Patch _verify_invite_caller to return an account_admin.
+        caller = {'user_id': 'admin-uuid', 'account_id': 2,
+                  'account_role': 'account_admin', 'is_admin': False}
+        with patch.object(auth_module, '_verify_invite_caller',
+                          return_value=(caller, None)):
+            # Sequence of fetchone results inside handle_set_user_clients:
+            #   1. SELECT account_id FROM users WHERE id = target → target's account
+            #   2. For each client_id: SELECT account_id FROM clients → same account
+            mock_cur.fetchone.side_effect = [
+                (2,),    # target user is in account 2
+                (2,),    # client c-1 owned by account 2 (same tenant)
+            ]
+            event = make_event(
+                method='POST',
+                path='/auth/users/target-uuid/clients',
+                body={'client_ids': ['c-1']},
+            )
+            response = auth_module.lambda_handler(event, None)
+            assert_status(response, 200)
+            body = parse_body(response)
+            assert body['assigned'] == 1
+
+    def test_cross_account_without_share_rejected(self, auth_module, mock_db):
+        """LOAD-BEARING: cross-account assignment without a share grant
+        returns 400 and explicitly names the rejected client_id."""
+        _, _, mock_cur = mock_db
+        caller = {'user_id': 'admin-uuid', 'account_id': 2,
+                  'account_role': 'account_admin', 'is_admin': False}
+        with patch.object(auth_module, '_verify_invite_caller',
+                          return_value=(caller, None)):
+            mock_cur.fetchone.side_effect = [
+                (2,),     # target user in account 2
+                (99,),    # client c-x owned by account 99 (cross-tenant)
+                None,     # share lookup: no grant
+            ]
+            event = make_event(
+                method='POST',
+                path='/auth/users/target-uuid/clients',
+                body={'client_ids': ['c-x']},
+            )
+            response = auth_module.lambda_handler(event, None)
+            assert_status(response, 400)
+            body = parse_body(response)
+            assert body['rejected'] == [{'client_id': 'c-x', 'reason': 'no_share_grant'}]
+
+    def test_cross_account_with_share_succeeds(self, auth_module, mock_db):
+        """Cross-account assignment ALLOWED when a share grant exists.
+        Joe (account 2 admin) assigning a shared client (owned by account 99)
+        to one of his reps after Intellagentic granted the share."""
+        _, _, mock_cur = mock_db
+        caller = {'user_id': 'admin-uuid', 'account_id': 2,
+                  'account_role': 'account_admin', 'is_admin': False}
+        with patch.object(auth_module, '_verify_invite_caller',
+                          return_value=(caller, None)):
+            mock_cur.fetchone.side_effect = [
+                (2,),     # target user in account 2
+                (99,),    # client c-x owned by account 99 (cross-tenant)
+                (1,),     # share lookup: grant EXISTS (any truthy row)
+            ]
+            event = make_event(
+                method='POST',
+                path='/auth/users/target-uuid/clients',
+                body={'client_ids': ['c-x']},
+            )
+            response = auth_module.lambda_handler(event, None)
+            assert_status(response, 200)
+
+    def test_unknown_client_id_rejected(self, auth_module, mock_db):
+        _, _, mock_cur = mock_db
+        caller = {'user_id': 'admin-uuid', 'account_id': 2,
+                  'account_role': 'account_admin', 'is_admin': False}
+        with patch.object(auth_module, '_verify_invite_caller',
+                          return_value=(caller, None)):
+            mock_cur.fetchone.side_effect = [
+                (2,),     # target user
+                None,     # client SELECT → not found
+            ]
+            event = make_event(
+                method='POST',
+                path='/auth/users/target-uuid/clients',
+                body={'client_ids': ['ghost']},
+            )
+            response = auth_module.lambda_handler(event, None)
+            assert_status(response, 400)
+            assert parse_body(response)['rejected'] == [
+                {'client_id': 'ghost', 'reason': 'not_found'}
+            ]
+
+
 class TestOptionsHandler:
     def test_options_returns_200(self, auth_module):
         event = make_event(method='OPTIONS', path='/auth/login')

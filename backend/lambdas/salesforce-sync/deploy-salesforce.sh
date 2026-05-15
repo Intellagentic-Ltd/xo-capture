@@ -27,6 +27,7 @@ cp sf_webhook.py package/
 cp ../shared/auth_helper.py package/
 cp ../shared/crypto_helper.py package/
 cp ../shared/integrations_config.py package/
+cp ../shared/client_access.py package/
 
 # Create zip
 cd package

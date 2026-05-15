@@ -101,6 +101,10 @@ def mock_deps():
     # `sf_client.requests` for HTTP, `sf_client.set_account_config` /
     # `sf_client.get_account_config` for token storage. `lambda_function`
     # still owns auth/route plumbing and re-exports symbols from sf_client.
+    # PR 3.4: can_user_access_client now lives inside lambda_function as an
+    # imported symbol and runs its own DB queries. Patch it here with default
+    # True so tests that don't care about access semantics see the happy
+    # path. Tests that want to assert the 403 path override the return value.
     patches = {
         'get_db_connection': patch('lambda_function.get_db_connection', return_value=mock_conn),
         'require_auth': patch('lambda_function.require_auth'),
@@ -110,6 +114,8 @@ def mock_deps():
         'set_account_config': patch('sf_client.set_account_config'),
         'get_account_config': patch('sf_client.get_account_config'),
         'delete_account_config': patch('lambda_function.delete_account_config'),
+        'can_user_access_client': patch('lambda_function.can_user_access_client',
+                                        return_value=True),
     }
     started = {k: p.start() for k, p in patches.items()}
     yield started, mock_conn, mock_cur
@@ -426,16 +432,17 @@ class TestSyncPush:
         assert_status(response, 404)
 
     def test_push_cross_account_returns_403(self, salesforce_module, mock_deps):
-        """TENANT ISOLATION: an account_admin from account 42 cannot push
-        a client owned by account 99, even if they pass its client_id."""
+        """TENANT ISOLATION: account_admin from account 42 cannot push a
+        client owned by account 99 unless a 'read_write' share exists.
+        PR 3.4: can_user_access_client returns False when there's no share."""
         started, mock_conn, mock_cur = mock_deps
         started['require_auth'].return_value = (ACCOUNT_ADMIN_USER, None)
         mock_cur.fetchone.return_value = CLIENT_ROW_OTHER_ACCOUNT
+        started['can_user_access_client'].return_value = False  # no share
         event = make_authed_event(method='POST', path='/salesforce/sync/push',
                                   body={'client_id': 'client-uuid-2'})
         response = salesforce_module.lambda_handler(event, None)
         assert_status(response, 403)
-        # Critically: no SF API call was made
         started['requests'].request.assert_not_called()
 
     def test_push_no_sf_tokens_returns_412(self, salesforce_module, mock_deps):

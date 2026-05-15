@@ -364,6 +364,57 @@ CREATE TABLE IF NOT EXISTS client_integrations (
 );
 
 -- ============================================================
+-- CROSS-TENANT CLIENT SHARING (PR 3.4) — owned by clients lambda
+-- (_run_sharing_migration). Enables co-sell visibility between accounts.
+--
+-- client_shares grants an account-level share of a client. Composite PK
+-- on (client_id, shared_with_account_id) prevents duplicate grants.
+-- permissions enum: 'read_only' | 'read_write'. Reads accept either;
+-- writes require 'read_write'.
+--
+-- ACCESS MODEL (Option 1, locked PR 3.4):
+--   super_admin                  → all clients
+--   account_admin (in B)         → own account + clients shared TO B
+--   account_user/contributor (in B) → UCA-scoped; share grants visibility
+--                                     at the account level, but per-user
+--                                     access is still controlled by UCA
+--                                     rows (cross-account assignments
+--                                     now permitted when share exists).
+--   client_contact               → unchanged (single client_id from JWT)
+--
+-- client_salesforce_links replaces clients.salesforce_account_id and
+-- salesforce_last_sync with a per-tenant mapping — each account_id maps
+-- the same shared client to its OWN SF Account Id. PR 3.4 dual-writes
+-- both the legacy columns and the new table from salesforce-sync's
+-- handle_sync_push. PR 3.5 cuts the SF read/write path over to this
+-- table and drops the legacy columns.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS client_shares (
+    client_id UUID NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    shared_with_account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    granted_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    granted_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    permissions VARCHAR(20) NOT NULL DEFAULT 'read_write'
+        CHECK (permissions IN ('read_only', 'read_write')),
+    PRIMARY KEY (client_id, shared_with_account_id)
+);
+CREATE INDEX IF NOT EXISTS idx_client_shares_recipient
+    ON client_shares(shared_with_account_id);
+
+CREATE TABLE IF NOT EXISTS client_salesforce_links (
+    client_id UUID NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    salesforce_account_id VARCHAR(18),
+    salesforce_last_sync TIMESTAMP WITH TIME ZONE,
+    PRIMARY KEY (client_id, account_id)
+);
+CREATE INDEX IF NOT EXISTS idx_client_sf_links_sf_account
+    ON client_salesforce_links(salesforce_account_id);
+
+-- Backfill — runs idempotently at clients lambda cold start.
+-- See clients/lambda_function.py:_run_sharing_migration for the runtime.
+
+-- ============================================================
 -- SALESFORCE SYNC (PR 2 / Stage 1a) — per-record tracking + sync log
 -- Owned by backend/lambdas/salesforce-sync/lambda_function.py
 -- (_run_salesforce_migrations runs these idempotently at cold start).
