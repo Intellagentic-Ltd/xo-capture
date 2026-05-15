@@ -9425,27 +9425,32 @@ function ConfigurationScreen({ theme, toggleTheme, buttons, setButtons, systemBu
             </div>
           </div>
 
-          {/* ── HubSpot Integration ── */}
-          <div className="panel" data-dxo="data-sources" style={{ marginTop: '1rem' }}>
+          {/* ── Integrations (combined card: HubSpot + Salesforce) ── */}
+          <div className="panel" data-dxo="integrations" style={{ marginTop: '1rem' }}>
             <div className="panel-header">
               <div className="panel-header-left">
                 <Cloud size={20} className="icon-red" />
-                <h2>HubSpot Integration</h2>
+                <h2>Integrations</h2>
               </div>
-              {hubspotStatusLoaded && (
-                <span style={{
-                  fontSize: '0.7rem',
-                  fontWeight: 600,
-                  padding: '0.2rem 0.6rem',
-                  borderRadius: 12,
-                  background: hubspotConnected ? 'rgba(34, 197, 94, 0.15)' : 'rgba(220, 38, 38, 0.1)',
-                  color: hubspotConnected ? '#22c55e' : '#dc2626',
-                }}>
-                  {hubspotConnected ? 'Connected' : 'Disconnected'}
-                </span>
-              )}
             </div>
             <div style={{ padding: '1.25rem' }}>
+
+              {/* HubSpot sub-section */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                <h3 style={{ fontSize: '0.95rem', fontWeight: 700, margin: 0, color: 'var(--text-primary)' }}>HubSpot</h3>
+                {hubspotStatusLoaded && (
+                  <span style={{
+                    fontSize: '0.7rem',
+                    fontWeight: 600,
+                    padding: '0.2rem 0.6rem',
+                    borderRadius: 12,
+                    background: hubspotConnected ? 'rgba(34, 197, 94, 0.15)' : 'rgba(220, 38, 38, 0.1)',
+                    color: hubspotConnected ? '#22c55e' : '#dc2626',
+                  }}>
+                    {hubspotConnected ? 'Connected' : 'Disconnected'}
+                  </span>
+                )}
+              </div>
               <p style={{ fontSize: '0.75rem', color: C.muted, marginBottom: '0.75rem', lineHeight: 1.4 }}>
                 Bi-directional sync between XO Capture and HubSpot CRM. Companies, contacts, and enrichment data are synced automatically.
               </p>
@@ -9550,33 +9555,30 @@ function ConfigurationScreen({ theme, toggleTheme, buttons, setButtons, systemBu
                   )}
                 </div>
               )}
-            </div>
-          </div>
 
-          {/* ── Salesforce Integration (PR 4) ── */}
-          <div className="config-panel">
-            <div className="panel-header">
-              <div className="panel-header-left">
-                <Cloud size={20} className="icon-red" />
-                <h2>Salesforce Integration</h2>
+              {/* Divider between the two integrations */}
+              <hr style={{ margin: '1.5rem 0', border: 'none', borderTop: '1px solid var(--border-color, #e5e7eb)' }} />
+
+              {/* Salesforce sub-section */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                <h3 style={{ fontSize: '0.95rem', fontWeight: 700, margin: 0, color: 'var(--text-primary)' }}>Salesforce</h3>
+                {salesforceStatusLoaded && (
+                  <span style={{
+                    fontSize: '0.7rem',
+                    fontWeight: 600,
+                    padding: '0.2rem 0.6rem',
+                    borderRadius: 12,
+                    background: salesforceConnected ? 'rgba(34, 197, 94, 0.15)' :
+                                (salesforceError === 'token_expired' ? 'rgba(234, 179, 8, 0.15)' : 'rgba(220, 38, 38, 0.1)'),
+                    color: salesforceConnected ? '#22c55e' :
+                           (salesforceError === 'token_expired' ? '#a16207' : '#dc2626'),
+                  }}>
+                    {salesforceConnected ? 'Connected' :
+                     (salesforceError === 'token_expired' ? 'Token expired' : 'Disconnected')}
+                  </span>
+                )}
               </div>
-              {salesforceStatusLoaded && (
-                <span style={{
-                  fontSize: '0.7rem',
-                  fontWeight: 600,
-                  padding: '0.2rem 0.6rem',
-                  borderRadius: 12,
-                  background: salesforceConnected ? 'rgba(34, 197, 94, 0.15)' :
-                              (salesforceError === 'token_expired' ? 'rgba(234, 179, 8, 0.15)' : 'rgba(220, 38, 38, 0.1)'),
-                  color: salesforceConnected ? '#22c55e' :
-                         (salesforceError === 'token_expired' ? '#a16207' : '#dc2626'),
-                }}>
-                  {salesforceConnected ? 'Connected' :
-                   (salesforceError === 'token_expired' ? 'Token expired' : 'Disconnected')}
-                </span>
-              )}
-            </div>
-            <div style={{ padding: '1.25rem' }}>
+              <div>
               <p style={{ fontSize: '0.75rem', color: C.muted, marginBottom: '0.75rem', lineHeight: 1.4 }}>
                 Bi-directional sync with Salesforce. Per-tenant — each account connects its own SF org. Pull and webhook deliver Account, Contact, and Opportunity changes into XO; push sends XO clients + engagement summaries to SF.
               </p>
@@ -9791,6 +9793,7 @@ function ConfigurationScreen({ theme, toggleTheme, buttons, setButtons, systemBu
                 </div>
               )}
             </div>
+          </div>
           </div>
 
           {/* ── System Buttons Config ── */}
