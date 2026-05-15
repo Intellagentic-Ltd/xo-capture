@@ -21,6 +21,7 @@ cp lambda_function.py package/
 cp preprocess_per_document.py package/
 cp ../shared/auth_helper.py package/
 cp ../shared/crypto_helper.py package/
+cp ../shared/client_access.py package/
 
 # Copy system skills
 mkdir -p package/system-skills
