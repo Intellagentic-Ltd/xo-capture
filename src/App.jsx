@@ -2089,6 +2089,18 @@ export default function App() {
   const [sidebarHover, setSidebarHover] = useState(false)
   const sidebarExpanded = sidebarPinned || sidebarHover
   const [clientId, setClientId] = useState(() => sessionStorage.getItem('xo-client-id') || null)
+  // PR 4 hotfix: SF state lifted from ConfigurationScreen to App so the
+  // sidebar SF Conflicts link can reference salesforceUnresolvedConflicts
+  // at the top-level render. ConfigurationScreen receives these as props.
+  const [salesforceConnected, setSalesforceConnected] = useState(false)
+  const [salesforceInstanceUrl, setSalesforceInstanceUrl] = useState(null)
+  const [salesforceError, setSalesforceError] = useState(null)
+  const [salesforceLastPullAt, setSalesforceLastPullAt] = useState(null)
+  const [salesforceUnresolvedConflicts, setSalesforceUnresolvedConflicts] = useState(0)
+  const [salesforceConnecting, setSalesforceConnecting] = useState(false)
+  const [salesforcePulling, setSalesforcePulling] = useState(false)
+  const [salesforceStatusLoaded, setSalesforceStatusLoaded] = useState(false)
+  const [salesforceSyncResult, setSalesforceSyncResult] = useState(null)
   const [companyData, setCompanyData] = useState({
     name: '',
     website: '',
@@ -2228,6 +2240,28 @@ export default function App() {
           .then(res => res.ok ? res.json() : null)
           .then(data => { if (data) setTeamUsers(data.users || []) })
           .catch(() => {})
+      }
+      // PR 4 hotfix: fetch SF status at the App level so the sidebar
+      // "SF Conflicts (N)" link has its count ready before any screen
+      // mounts. Only relevant for users with an account_id — the backend
+      // 400s otherwise. Errors are swallowed (status remains disconnected,
+      // count remains 0).
+      if (user && user.account_id != null) {
+        fetch(`${API_BASE}/salesforce/status`, { headers: getAuthHeaders() })
+          .then(res => res.ok ? res.json() : null)
+          .then(data => {
+            if (data) {
+              setSalesforceConnected(!!data.connected)
+              setSalesforceInstanceUrl(data.instance_url || null)
+              setSalesforceError(data.error || null)
+              setSalesforceLastPullAt(data.last_pull_at || null)
+              setSalesforceUnresolvedConflicts(data.unresolved_conflicts || 0)
+            }
+          })
+          .catch(() => {})
+          .finally(() => setSalesforceStatusLoaded(true))
+      } else {
+        setSalesforceStatusLoaded(true)
       }
     }
   }, [isLoggedIn])
@@ -2951,7 +2985,7 @@ export default function App() {
           </div>
         )}
         {currentScreen === 'skills' && <SkillsScreen clientId={clientId} isAdmin={isAdmin} preferredModel={preferredModel} activeEngagement={activeEngagement} onNavigate={navigateTo} />}
-        {currentScreen === 'configuration' && <ConfigurationScreen theme={theme} toggleTheme={toggleTheme} buttons={configButtons} setButtons={saveButtons} systemButtons={systemButtons} setSystemButtons={saveSystemButtons} preferredModel={preferredModel} setPreferredModel={saveModelPreference} clientId={clientId} inWorkspace={inWorkspace} isAdmin={isAdmin} companyName={companyData.name} />}
+        {currentScreen === 'configuration' && <ConfigurationScreen theme={theme} toggleTheme={toggleTheme} buttons={configButtons} setButtons={saveButtons} systemButtons={systemButtons} setSystemButtons={saveSystemButtons} preferredModel={preferredModel} setPreferredModel={saveModelPreference} clientId={clientId} inWorkspace={inWorkspace} isAdmin={isAdmin} companyName={companyData.name} salesforceConnected={salesforceConnected} setSalesforceConnected={setSalesforceConnected} salesforceInstanceUrl={salesforceInstanceUrl} setSalesforceInstanceUrl={setSalesforceInstanceUrl} salesforceError={salesforceError} setSalesforceError={setSalesforceError} salesforceLastPullAt={salesforceLastPullAt} setSalesforceLastPullAt={setSalesforceLastPullAt} salesforceUnresolvedConflicts={salesforceUnresolvedConflicts} setSalesforceUnresolvedConflicts={setSalesforceUnresolvedConflicts} salesforceStatusLoaded={salesforceStatusLoaded} onNavigate={navigateTo} />}
         {currentScreen === 'branding' && <BrandingScreen clientId={clientId} companyData={companyData} setCompanyData={setCompanyData} />}
         {currentScreen === 'accounts' && isAdmin && <AccountsScreen accounts={accounts} setAccounts={setAccounts} teamUsers={teamUsers} />}
         {currentScreen === 'team' && (isAdmin || user?.account_role === 'account_admin') && <TeamScreen isAdmin={isAdmin} user={user} accounts={accounts} teamUsers={teamUsers} setTeamUsers={setTeamUsers} />}
@@ -8616,7 +8650,15 @@ function SystemSkillsPanel({ C }) {
 }
 
 
-function ConfigurationScreen({ theme, toggleTheme, buttons, setButtons, systemButtons, setSystemButtons, preferredModel, setPreferredModel, clientId, inWorkspace, isAdmin, companyName }) {
+function ConfigurationScreen({ theme, toggleTheme, buttons, setButtons, systemButtons, setSystemButtons, preferredModel, setPreferredModel, clientId, inWorkspace, isAdmin, companyName,
+  // PR 4 hotfix: SF state lifted to App.
+  salesforceConnected, setSalesforceConnected,
+  salesforceInstanceUrl, setSalesforceInstanceUrl,
+  salesforceError, setSalesforceError,
+  salesforceLastPullAt, setSalesforceLastPullAt,
+  salesforceUnresolvedConflicts, setSalesforceUnresolvedConflicts,
+  salesforceStatusLoaded, onNavigate,
+}) {
   const isDark = theme === 'dark'
   const [editingId, setEditingId] = useState(null)
   const [draggedId, setDraggedId] = useState(null)
@@ -8650,15 +8692,13 @@ function ConfigurationScreen({ theme, toggleTheme, buttons, setButtons, systemBu
   const [hubspotConnecting, setHubspotConnecting] = useState(false)
   const [hubspotStatusLoaded, setHubspotStatusLoaded] = useState(false)
   const [hubspotSyncResult, setHubspotSyncResult] = useState(null)
-  // Salesforce integration state (PR 4 — mirrors HubSpot pattern)
-  const [salesforceConnected, setSalesforceConnected] = useState(false)
-  const [salesforceInstanceUrl, setSalesforceInstanceUrl] = useState(null)
-  const [salesforceError, setSalesforceError] = useState(null)
-  const [salesforceLastPullAt, setSalesforceLastPullAt] = useState(null)
-  const [salesforceUnresolvedConflicts, setSalesforceUnresolvedConflicts] = useState(0)
+  // PR 4 hotfix: SF state lifted to App, passed in as props.
+  // (Local state still needed for in-screen interactions: connecting,
+  // pulling, syncResult. The shared cross-screen state — connected,
+  // instance_url, error, last_pull_at, unresolved_conflicts,
+  // statusLoaded — comes from props.)
   const [salesforceConnecting, setSalesforceConnecting] = useState(false)
   const [salesforcePulling, setSalesforcePulling] = useState(false)
-  const [salesforceStatusLoaded, setSalesforceStatusLoaded] = useState(false)
   const [salesforceSyncResult, setSalesforceSyncResult] = useState(null)
 
   useEffect(() => {
@@ -8697,13 +8737,15 @@ function ConfigurationScreen({ theme, toggleTheme, buttons, setButtons, systemBu
         })
         .catch(() => {})
         .finally(() => setHubspotStatusLoaded(true))
-      // PR 4: Salesforce connection status + pull metadata + conflict count.
-      // Single roundtrip — backend returns {connected, instance_url, error,
-      // last_pull_at, unresolved_conflicts}.
+      // PR 4 hotfix: SF status fetch moved up to App so the sidebar
+      // count is populated before Configuration is mounted. This block
+      // stays as a re-fetch trigger if the user navigates into
+      // Configuration after a long idle (next time, App's mount
+      // useEffect won't re-run on its own).
       fetch(`${API_BASE}/salesforce/status`, { headers: getAuthHeaders() })
         .then(res => res.ok ? res.json() : null)
         .then(data => {
-          if (data) {
+          if (data && setSalesforceConnected) {
             setSalesforceConnected(!!data.connected)
             setSalesforceInstanceUrl(data.instance_url || null)
             setSalesforceError(data.error || null)
@@ -8712,7 +8754,6 @@ function ConfigurationScreen({ theme, toggleTheme, buttons, setButtons, systemBu
           }
         })
         .catch(() => {})
-        .finally(() => setSalesforceStatusLoaded(true))
     } else {
       setWebhookLoaded(true)
     }
@@ -9639,7 +9680,7 @@ function ConfigurationScreen({ theme, toggleTheme, buttons, setButtons, systemBu
                   )}
                   {salesforceUnresolvedConflicts > 0 && (
                     <button
-                      onClick={() => setCurrentScreen('sf-conflicts')}
+                      onClick={() => onNavigate && onNavigate('sf-conflicts')}
                       style={{
                         padding: '0.5rem 0.75rem',
                         background: '#fefce8', color: '#854d0e',
