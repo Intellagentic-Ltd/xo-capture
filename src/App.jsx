@@ -9515,6 +9515,7 @@ function ConfigurationScreen({ theme, toggleTheme, buttons, setButtons, systemBu
               {hubspotConnected && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
                   <p style={{ fontSize: '0.65rem', color: C.muted, fontStyle: 'italic', margin: 0 }}>Connected via Private App token. OAuth flow not required.</p>
+                  <p style={{ fontSize: '0.65rem', color: C.muted, fontStyle: 'italic', margin: 0 }}>No per-user authorization needed. To disconnect, rotate the Private App token in HubSpot and update the <code style={{ fontFamily: 'inherit' }}>HUBSPOT_API_KEY</code> environment variable on the lambda.</p>
                   {hubspotLastSync && (
                     <div style={{
                       padding: '0.5rem 0.75rem',
@@ -9561,6 +9562,9 @@ function ConfigurationScreen({ theme, toggleTheme, buttons, setButtons, systemBu
                     {hubspotLoading ? <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /> : <RefreshCw size={16} />}
                     {hubspotLoading ? 'Syncing...' : 'Sync Now'}
                   </button>
+                  <p style={{ fontSize: '0.65rem', color: C.muted, fontStyle: 'italic', margin: 0, lineHeight: 1.4 }}>
+                    Sync Now pulls fresh company, contact, and enrichment data from HubSpot. Pushes from XO to HubSpot happen automatically as you create or edit records.
+                  </p>
                   {hubspotSyncResult && (
                     <div style={{ marginTop: '0.5rem', padding: '0.5rem 0.75rem', borderRadius: 8, fontSize: '0.75rem', background: hubspotSyncResult.success ? '#f0fdf4' : '#fef2f2', color: hubspotSyncResult.success ? '#166534' : '#991b1b', border: `1px solid ${hubspotSyncResult.success ? '#22c55e' : '#dc2626'}` }}>
                       {hubspotSyncResult.success ? <CheckCircle size={14} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 4 }} /> : <AlertTriangle size={14} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 4 }} />}
@@ -9594,7 +9598,7 @@ function ConfigurationScreen({ theme, toggleTheme, buttons, setButtons, systemBu
               </div>
               <div>
               <p style={{ fontSize: '0.75rem', color: C.muted, marginBottom: '0.75rem', lineHeight: 1.4 }}>
-                Bi-directional sync with Salesforce. Per-tenant — each account connects its own SF org. Pull and webhook deliver Account, Contact, and Opportunity changes into XO; push sends XO clients + engagement summaries to SF.
+                Sync with Salesforce. Per-tenant — each account connects its own Salesforce org. Account, Contact, and Opportunity changes pull from Salesforce into XO Capture. Engagement summaries push from XO to Salesforce automatically when generated.
               </p>
 
               {salesforceError === 'token_expired' && (
@@ -9683,6 +9687,9 @@ function ConfigurationScreen({ theme, toggleTheme, buttons, setButtons, systemBu
                       </a>
                     </div>
                   )}
+                  <p style={{ fontSize: '0.65rem', color: C.muted, fontStyle: 'italic', margin: 0, lineHeight: 1.4 }}>
+                    Connected via OAuth as a Salesforce user in this org. We recommend connecting a dedicated Salesforce Integration User so sync isn't tied to an individual's permissions.
+                  </p>
                   {salesforceLastPullAt && (
                     <div style={{
                       padding: '0.5rem 0.75rem',
@@ -9790,6 +9797,9 @@ function ConfigurationScreen({ theme, toggleTheme, buttons, setButtons, systemBu
                       Disconnect
                     </button>
                   </div>
+                  <p style={{ fontSize: '0.65rem', color: C.muted, fontStyle: 'italic', margin: 0, lineHeight: 1.4 }}>
+                    Sync Now pulls Accounts, Contacts, and Opportunities from Salesforce into XO. Disconnect revokes this account's OAuth grant — you'll need to re-authorize to reconnect.
+                  </p>
                   {salesforceSyncResult && (
                     <div style={{
                       marginTop: '0.5rem', padding: '0.5rem 0.75rem',
