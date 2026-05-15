@@ -425,6 +425,29 @@ ALTER TABLE engagements ADD COLUMN IF NOT EXISTS salesforce_task_id VARCHAR(18);
 ALTER TABLE engagements ADD COLUMN IF NOT EXISTS salesforce_synced_at TIMESTAMP WITH TIME ZONE;
 CREATE INDEX IF NOT EXISTS idx_clients_sf_account ON clients(salesforce_account_id);
 
+-- PR 3.5: Opportunity reconciliation needs salesforce_opportunity_id on
+-- engagements (separate from salesforce_task_id which the push activity uses).
+-- Standard Opportunity field mirror columns added so the pull reconciler
+-- can write back: stage, amount, close_date, description.
+ALTER TABLE engagements ADD COLUMN IF NOT EXISTS salesforce_opportunity_id VARCHAR(18);
+ALTER TABLE engagements ADD COLUMN IF NOT EXISTS stage VARCHAR(80);
+ALTER TABLE engagements ADD COLUMN IF NOT EXISTS amount NUMERIC(18,2);
+ALTER TABLE engagements ADD COLUMN IF NOT EXISTS close_date DATE;
+ALTER TABLE engagements ADD COLUMN IF NOT EXISTS description TEXT;
+CREATE INDEX IF NOT EXISTS idx_engagements_sf_opportunity
+    ON engagements(salesforce_opportunity_id);
+
+-- PR 3.5: drop the single-valued legacy SF columns on clients. Per-tenant
+-- mapping lives in client_salesforce_links (PR 3.4). After this drop:
+--   - sf_push reads/writes client_salesforce_links scoped to JWT account_id
+--   - sf_pull reconcile joins client_salesforce_links
+--   - sf_contact_pull / sf_opportunity_pull build on the new pattern
+-- The drop is idempotent (DROP COLUMN IF EXISTS) so re-running cold start
+-- after the migration is safe.
+DROP INDEX IF EXISTS idx_clients_sf_account;
+ALTER TABLE clients DROP COLUMN IF EXISTS salesforce_account_id;
+ALTER TABLE clients DROP COLUMN IF EXISTS salesforce_last_sync;
+
 -- Sync log — one row per push/pull/conflict/spoof event. account_id-scoped
 -- so each tenant only sees its own activity (enforced at the lambda layer).
 -- PR 3 extends sync_direction to: 'push' | 'pull' | 'conflict' | 'spoof'.

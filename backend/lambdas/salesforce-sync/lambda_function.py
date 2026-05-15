@@ -43,6 +43,8 @@ from sf_client import (
     read_account_tokens, write_account_tokens,
 )
 from sf_pull import pull_accounts
+from sf_contact_pull import pull_contacts
+from sf_opportunity_pull import pull_opportunities
 from sf_webhook import handle_outbound_message
 from client_access import can_user_access_client
 
@@ -59,18 +61,31 @@ def _run_salesforce_migrations():
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute(
-            "ALTER TABLE clients ADD COLUMN IF NOT EXISTS salesforce_account_id VARCHAR(18)"
-        )
-        cur.execute(
-            "ALTER TABLE clients ADD COLUMN IF NOT EXISTS salesforce_last_sync TIMESTAMP WITH TIME ZONE"
-        )
+
+        # PR 2 / 3 / 3.5 schema, idempotent at every cold start.
         cur.execute(
             "ALTER TABLE engagements ADD COLUMN IF NOT EXISTS salesforce_task_id VARCHAR(18)"
         )
         cur.execute(
             "ALTER TABLE engagements ADD COLUMN IF NOT EXISTS salesforce_synced_at TIMESTAMP WITH TIME ZONE"
         )
+
+        # PR 3.5: Opportunity reconciliation needs salesforce_opportunity_id on
+        # engagements (separate from salesforce_task_id which sf push uses for
+        # the activity record). Plus the standard Opportunity fields the pull
+        # path mirrors back into the engagement row.
+        cur.execute(
+            "ALTER TABLE engagements ADD COLUMN IF NOT EXISTS salesforce_opportunity_id VARCHAR(18)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_engagements_sf_opportunity "
+            "ON engagements(salesforce_opportunity_id)"
+        )
+        cur.execute("ALTER TABLE engagements ADD COLUMN IF NOT EXISTS stage VARCHAR(80)")
+        cur.execute("ALTER TABLE engagements ADD COLUMN IF NOT EXISTS amount NUMERIC(18,2)")
+        cur.execute("ALTER TABLE engagements ADD COLUMN IF NOT EXISTS close_date DATE")
+        cur.execute("ALTER TABLE engagements ADD COLUMN IF NOT EXISTS description TEXT")
+
         cur.execute("""
             CREATE TABLE IF NOT EXISTS salesforce_sync_log (
                 id SERIAL PRIMARY KEY,
@@ -93,14 +108,21 @@ def _run_salesforce_migrations():
             "CREATE INDEX IF NOT EXISTS idx_sf_sync_log_record "
             "ON salesforce_sync_log(record_type, record_id)"
         )
-        cur.execute(
-            "CREATE INDEX IF NOT EXISTS idx_clients_sf_account "
-            "ON clients(salesforce_account_id)"
-        )
+
+        # PR 3.5: drop the legacy clients.salesforce_account_id and
+        # salesforce_last_sync columns. SF mapping moved to
+        # client_salesforce_links (per-tenant, owned by clients lambda from
+        # PR 3.4). idx_clients_sf_account is dropped automatically when its
+        # column drops; DROP INDEX IF EXISTS handles re-run.
+        cur.execute("DROP INDEX IF EXISTS idx_clients_sf_account")
+        cur.execute("ALTER TABLE clients DROP COLUMN IF EXISTS salesforce_account_id")
+        cur.execute("ALTER TABLE clients DROP COLUMN IF EXISTS salesforce_last_sync")
+
         conn.commit()
         cur.close()
         conn.close()
-        print("Salesforce migration complete: clients/engagements columns + salesforce_sync_log")
+        print("Salesforce migration complete: engagements.salesforce_opportunity_id added; "
+              "legacy clients SF columns dropped; sync log + indexes ensured.")
     except Exception as e:
         print(f"Salesforce migration check (non-fatal): {e}")
 
@@ -434,10 +456,13 @@ def handle_sync_push(event, user):
     conn = get_db_connection()
     try:
         cur = conn.cursor()
+        # PR 3.5: legacy clients.salesforce_account_id / salesforce_last_sync
+        # columns are dropped at the end of this PR. SF Account Id now lives
+        # in client_salesforce_links(client_id, account_id) — per-tenant.
         cur.execute(
             """SELECT id, company_name, website_url, industry, description,
                       pain_point, survival_metric_1, survival_metric_2,
-                      ai_persona, strategic_objective, salesforce_account_id, account_id
+                      ai_persona, strategic_objective, account_id
                FROM clients WHERE id = %s""",
             (client_id,),
         )
@@ -451,7 +476,7 @@ def handle_sync_push(event, user):
             'industry': row[3], 'description': row[4], 'pain_point': row[5],
             'survival_metric_1': row[6], 'survival_metric_2': row[7],
             'ai_persona': row[8], 'strategic_objective': row[9],
-            'salesforce_account_id': row[10], 'account_id': row[11],
+            'account_id': row[10],
         }
 
         # PR 3.4: extend ownership check to include share grants. The
@@ -465,7 +490,21 @@ def handle_sync_push(event, user):
             return _err(412, "Salesforce not connected for this account. "
                              "Call POST /salesforce/connect first.")
 
-        existing_sf_id = client['salesforce_account_id']
+        # PR 3.5: lookup the actor account's SF Account Id for this client
+        # via client_salesforce_links, NOT the dropped legacy column.
+        # Per-tenant mapping: Intellistack's push of shared Acme reads
+        # Intellistack's row; Intellagentic's push reads its own row.
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "SELECT salesforce_account_id FROM client_salesforce_links "
+                "WHERE client_id = %s AND account_id = %s",
+                (client['id'], account_id),
+            )
+            link_row = cur.fetchone()
+        finally:
+            cur.close()
+        existing_sf_id = link_row[0] if link_row else None
         if not existing_sf_id:
             existing_sf_id = _find_account_by_name(
                 conn, account_id, tokens, client['company_name']
@@ -477,18 +516,9 @@ def handle_sync_push(event, user):
 
         cur = conn.cursor()
         try:
-            # Legacy column write — PR 3.5 will stop writing this once SF
-            # reads/writes route through client_salesforce_links.
-            cur.execute(
-                "UPDATE clients SET salesforce_account_id = %s, "
-                "salesforce_last_sync = NOW() WHERE id = %s",
-                (sf_account_id, client['id']),
-            )
-            # PR 3.4 dual-write — per-tenant SF mapping. Each (client_id,
-            # account_id) tracks the actor account's SF Account Id for this
-            # client. The actor's account_id (from JWT) is the row key, not
-            # the client's owning account_id — that's the whole point: each
-            # tenant maps the same shared client to a different SF org.
+            # PR 3.5: single-write to client_salesforce_links. The legacy
+            # clients.salesforce_account_id / salesforce_last_sync columns
+            # are dropped in this PR's migration block.
             cur.execute(
                 """INSERT INTO client_salesforce_links
                        (client_id, account_id, salesforce_account_id,
@@ -564,15 +594,12 @@ def handle_sync_push(event, user):
 
 
 def handle_sync_pull(event, user):
-    """POST /salesforce/sync/pull — pull Account changes since last sync.
+    """POST /salesforce/sync/pull — pull Account/Contact/Opportunity
+    changes since last sync.
 
-    Team model only in PR 3. account_id is sourced from JWT — body is
-    ignored except for forward-compatibility (PR 3.5 may add per-entity
-    selection).
-
-    PR 3 scope intentionally limited to Account. Contact and Opportunity
-    follow the same pattern (SOQL query + reconcile loop + per-entity
-    timestamp via integrations_config) and will ship in a follow-up PR.
+    Team model only. account_id is sourced from JWT — body is currently
+    ignored. PR 3.5 added Contact + Opportunity to the pull loop; each
+    entity tracks its own high-water timestamp in system_config.
     """
     account_id, err = _require_account_id(user)
     if err:
@@ -585,8 +612,19 @@ def handle_sync_pull(event, user):
             return _err(412, "Salesforce not connected for this account. "
                              "Call POST /salesforce/connect first.")
 
-        summary = pull_accounts(conn, account_id, tokens)
-        return _ok({'pulled': True, 'summary': summary})
+        # Order: Account first so Contact and Opportunity reconcile against
+        # the freshest XO client set (and any newly-created clients from the
+        # Account pull have client_salesforce_links rows by the time we look
+        # them up in the Contact/Opportunity reconcilers).
+        accounts_summary = pull_accounts(conn, account_id, tokens)
+        contacts_summary = pull_contacts(conn, account_id, tokens)
+        opps_summary = pull_opportunities(conn, account_id, tokens)
+        return _ok({
+            'pulled': True,
+            'accounts': accounts_summary,
+            'contacts': contacts_summary,
+            'opportunities': opps_summary,
+        })
     finally:
         conn.close()
 
