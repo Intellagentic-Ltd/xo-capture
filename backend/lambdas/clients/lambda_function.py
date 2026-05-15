@@ -2711,18 +2711,18 @@ def handle_create_client(event, user):
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Accounts auto-assign their account_id to new clients.
-        # NB: covers both the legacy is_account flag and the modern
-        # account_role values (account_admin / account_user / contributor) —
-        # earlier code only checked is_account, so role-based JWTs were
-        # silently leaving clients.account_id NULL and breaking the SF
-        # bidi push guard (which can't look up SF tokens without an
-        # account_id). Admins / super_admins fall through to body.account_id
-        # so they can still create clients in any account.
-        account_id_val = body.get('account_id')  # int or None
-        if user.get('account_id') and not user.get('is_admin') and (
-            user.get('account_role') != 'super_admin'
-        ):
+        # Account-id resolution:
+        #   1. body.account_id wins when explicitly set — preserves the
+        #      super_admin / admin cross-account create path.
+        #   2. Otherwise default to the caller's account_id claim. Covers
+        #      every JWT shape we ship: legacy is_account, modern
+        #      account_role (account_admin / account_user / contributor /
+        #      super_admin), and any future role-based variant. Without
+        #      this fallback super_admin creates leave clients.account_id
+        #      NULL and the SF bidi push guard correctly but unhelpfully
+        #      skips with "no account_id resolved for this client".
+        account_id_val = body.get('account_id')
+        if account_id_val is None and user.get('account_id'):
             account_id_val = user['account_id']
         intellagentic_lead_val = bool(body.get('intellagentic_lead', False))
 
