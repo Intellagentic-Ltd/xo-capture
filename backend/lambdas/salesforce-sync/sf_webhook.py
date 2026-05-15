@@ -44,6 +44,8 @@ import xml.etree.ElementTree as ET
 from integrations_config import get_account_config, set_account_config
 from sf_client import fetch_org_id, read_account_tokens
 from sf_pull import _reconcile_account
+from sf_contact_pull import _reconcile_contact
+from sf_opportunity_pull import _reconcile_opportunity
 
 logger = logging.getLogger('xo.salesforce.webhook')
 logger.setLevel(logging.INFO)
@@ -259,25 +261,29 @@ def handle_outbound_message(event, get_db_connection):
             )
             return _ack_response(False)
 
-        # Process notifications. PR 3 handles Account; other SObject types
-        # are accepted and logged but not yet reconciled.
+        # PR 3.5: Account, Contact, Opportunity all reconcile via dedicated
+        # modules. Per-record errors are caught so one bad record doesn't
+        # cascade SF retries across the whole batch.
+        _RECONCILERS = {
+            'Account': _reconcile_account,
+            'Contact': _reconcile_contact,
+            'Opportunity': _reconcile_opportunity,
+        }
         for notif in parsed['notifications']:
             sobject_type = notif.get('sobject_type')
             fields = notif.get('fields') or {}
-            if sobject_type == 'Account' and fields.get('Id'):
+            reconciler = _RECONCILERS.get(sobject_type)
+            if reconciler and fields.get('Id'):
                 try:
-                    _reconcile_account(conn, account_id, fields)
+                    reconciler(conn, account_id, fields)
                 except Exception as e:
-                    # Don't fail the entire webhook for one bad record —
-                    # SF will retry the whole batch on Ack=false, which
-                    # could cause runaway retries for an unrelated issue.
                     logger.exception(
-                        "webhook reconcile failed for Account=%s account_id=%s: %s",
-                        fields.get('Id'), account_id, e,
+                        "webhook reconcile failed for %s=%s account_id=%s: %s",
+                        sobject_type, fields.get('Id'), account_id, e,
                     )
             else:
                 logger.info(
-                    "webhook ignoring sobject_type=%s (not handled in PR 3)",
+                    "webhook ignoring sobject_type=%s (no reconciler registered)",
                     sobject_type,
                 )
 

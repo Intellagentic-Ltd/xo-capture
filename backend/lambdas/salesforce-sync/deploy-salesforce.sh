@@ -23,6 +23,8 @@ pip3 install -r requirements.txt -t package/ --quiet \
 cp lambda_function.py package/
 cp sf_client.py package/
 cp sf_pull.py package/
+cp sf_contact_pull.py package/
+cp sf_opportunity_pull.py package/
 cp sf_webhook.py package/
 cp ../shared/auth_helper.py package/
 cp ../shared/crypto_helper.py package/
