@@ -76,6 +76,14 @@ DEFERRED_LINES = {
         'magic-link operation: partner ownership-only by design',
     ('backend/lambdas/auth/lambda_function.py', 1013):
         'magic-link operation: partner ownership-only by design',
+    # PR 3.5: JOIN condition on client_salesforce_links (exempt table —
+    # per-tenant SF mapping). The account_id = %s here binds csl.account_id,
+    # not clients.account_id. The line is in the same query as the share-
+    # aware `clients_where_fragment` access filter, so the join condition
+    # is safe. The audit's table-detection finds 'FROM clients' first and
+    # flags conservatively; this entry says "we checked, it's fine."
+    ('backend/lambdas/salesforce-sync/sf_pull.py', 261):
+        'join condition on client_salesforce_links (per-tenant SF mapping)',
 }
 
 

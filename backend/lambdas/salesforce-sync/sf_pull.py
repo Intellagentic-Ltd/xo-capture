@@ -235,11 +235,15 @@ def _reconcile_account(conn, account_id, sf_account):
     """
     cur = conn.cursor()
     try:
-        # PR 3.4b: share-aware match. The actor account (Intellistack)
-        # can reconcile against clients it OWNS or against clients shared
-        # with it (e.g. Acme co-sell with Intellagentic). Construct a
-        # synthetic account_admin user so the shared helper gives us the
-        # owned-OR-shared fragment uniformly with every other lambda.
+        # PR 3.4b: share-aware match. The actor account can reconcile
+        # against clients it OWNS or against clients SHARED with it.
+        # PR 3.5: salesforce_account_id is now per-tenant in
+        # client_salesforce_links. Match is:
+        #   (a) direct link via client_salesforce_links scoped to the
+        #       actor's account_id (Intellistack's row, not Intellagentic's), OR
+        #   (b) fuzzy match by company_name for first-touch records.
+        # The owned-OR-shared filter is applied via clients_where_fragment
+        # so we don't pull data outside the actor's visible client set.
         synthetic_user = {
             'account_role': 'account_admin',
             'account_id': account_id,
@@ -249,13 +253,17 @@ def _reconcile_account(conn, account_id, sf_account):
         }
         access_frag, access_params = clients_where_fragment(synthetic_user, alias='clients')
         cur.execute(
-            f"""SELECT id, company_name, website_url, industry, description,
-                      updated_at, salesforce_last_sync
+            f"""SELECT clients.id, clients.company_name, clients.website_url,
+                       clients.industry, clients.description, clients.updated_at,
+                       csl.salesforce_last_sync
                FROM clients
+               LEFT JOIN client_salesforce_links csl
+                    ON csl.client_id = clients.id AND csl.account_id = %s
                WHERE ({access_frag})
-               AND (salesforce_account_id = %s OR LOWER(company_name) = LOWER(%s))
+               AND (csl.salesforce_account_id = %s
+                    OR LOWER(clients.company_name) = LOWER(%s))
                LIMIT 1""",
-            access_params + (sf_account['Id'], sf_account.get('Name') or ''),
+            (account_id,) + access_params + (sf_account['Id'], sf_account.get('Name') or ''),
         )
         row = cur.fetchone()
     finally:
@@ -294,7 +302,7 @@ def _reconcile_account(conn, account_id, sf_account):
         direction = 'pull'
 
     # direction in ('first_sync', 'pull')
-    _apply_pull_to_client(conn, xo_id, sf_account)
+    _apply_pull_to_client(conn, account_id, xo_id, sf_account)
     log_pull(
         conn, account_id, 'client', xo_id, sf_account['Id'],
         fields_updated=list(SYNC_FIELDS_ACCOUNT.keys()),
@@ -302,8 +310,11 @@ def _reconcile_account(conn, account_id, sf_account):
     return 'pulled'
 
 
-def _apply_pull_to_client(conn, xo_id, sf_account):
-    """Apply SF Account fields to an existing XO client."""
+def _apply_pull_to_client(conn, account_id, xo_id, sf_account):
+    """Apply SF Account fields to an existing XO client.
+
+    PR 3.5: legacy clients.salesforce_account_id is dropped; the per-
+    tenant mapping moves to client_salesforce_links."""
     cur = conn.cursor()
     try:
         cur.execute(
@@ -312,13 +323,20 @@ def _apply_pull_to_client(conn, xo_id, sf_account):
                  website_url  = COALESCE(%s, website_url),
                  industry     = COALESCE(%s, industry),
                  description  = COALESCE(%s, description),
-                 salesforce_account_id = %s,
-                 salesforce_last_sync = NOW(),
                  updated_at = NOW()
                WHERE id = %s""",
             (sf_account.get('Name'), sf_account.get('Website'),
              sf_account.get('Industry'), sf_account.get('Description'),
-             sf_account['Id'], xo_id),
+             xo_id),
+        )
+        cur.execute(
+            """INSERT INTO client_salesforce_links
+                   (client_id, account_id, salesforce_account_id, salesforce_last_sync)
+               VALUES (%s, %s, %s, NOW())
+               ON CONFLICT (client_id, account_id) DO UPDATE
+                   SET salesforce_account_id = EXCLUDED.salesforce_account_id,
+                       salesforce_last_sync = EXCLUDED.salesforce_last_sync""",
+            (xo_id, account_id, sf_account['Id']),
         )
         conn.commit()
     finally:
@@ -327,7 +345,10 @@ def _apply_pull_to_client(conn, xo_id, sf_account):
 
 def _create_xo_client_from_account(conn, account_id, sf_account):
     """Create a new XO client from an SF Account. Only called when
-    XO_Sync_Enabled__c=TRUE (the filter is the opt-in)."""
+    XO_Sync_Enabled__c=TRUE (the filter is the opt-in).
+
+    PR 3.5: clients row no longer carries the legacy salesforce_* columns;
+    the SF mapping is persisted in client_salesforce_links."""
     cur = conn.cursor()
     try:
         # s3_folder is required NOT NULL UNIQUE. Use a deterministic name
@@ -336,15 +357,24 @@ def _create_xo_client_from_account(conn, account_id, sf_account):
         cur.execute(
             """INSERT INTO clients
                (account_id, company_name, website_url, industry, description,
-                s3_folder, salesforce_account_id, salesforce_last_sync, status)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), 'active')
+                s3_folder, status)
+               VALUES (%s, %s, %s, %s, %s, %s, 'active')
                ON CONFLICT (s3_folder) DO NOTHING
                RETURNING id""",
             (account_id, sf_account.get('Name'), sf_account.get('Website'),
              sf_account.get('Industry'), sf_account.get('Description'),
-             s3_folder, sf_account['Id']),
+             s3_folder),
         )
         row = cur.fetchone()
+        if row:
+            cur.execute(
+                """INSERT INTO client_salesforce_links
+                       (client_id, account_id, salesforce_account_id,
+                        salesforce_last_sync)
+                   VALUES (%s, %s, %s, NOW())
+                   ON CONFLICT (client_id, account_id) DO NOTHING""",
+                (row[0], account_id, sf_account['Id']),
+            )
         conn.commit()
     finally:
         cur.close()
