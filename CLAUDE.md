@@ -110,3 +110,8 @@ System skills deploy (sync git to S3):
 ```bash
 aws s3 sync ~/xo-capture/skills/system/ s3://xo-client-data-mv/_system/skills/ --profile intellagentic --region eu-west-2
 ```
+
+## Commit and PR conventions
+- NEVER add "Co-Authored-By: Claude" trailers to commits.
+- NEVER add "Generated with Claude Code" footers to commits or PR bodies.
+- No tool attribution of any kind. Commits and PRs are authored by Ken.
