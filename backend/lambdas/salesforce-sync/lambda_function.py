@@ -47,6 +47,7 @@ from sf_contact_pull import pull_contacts
 from sf_opportunity_pull import pull_opportunities
 from sf_webhook import handle_outbound_message
 from client_access import can_user_access_client
+import sf_push
 
 logger = logging.getLogger('xo.salesforce')
 logger.setLevel(logging.INFO)
@@ -176,7 +177,10 @@ def _require_account_id(user):
 # ──────────────────────────────────────────────
 def _build_account_description(client):
     """Compose XO summary text for Account.Description.
-    Standard text field, ~32K chars cap on most SF orgs."""
+    Standard text field, ~32K chars cap on most SF orgs.
+    The '[Synced from XO Capture]' marker is no longer embedded here — it
+    is applied as a one-time prefix on initial Account create only, via
+    _build_account_props(is_initial_create=True)."""
     parts = []
     if client.get('ai_persona'):
         parts.append(f"AI Persona:\n{client['ai_persona']}")
@@ -188,20 +192,27 @@ def _build_account_description(client):
         parts.append(f"Survival Metric 2:\n{client['survival_metric_2']}")
     if client.get('strategic_objective'):
         parts.append(f"Strategic Objective:\n{client['strategic_objective']}")
-    parts.append(f"\n[Synced from XO Capture at {datetime.now(timezone.utc).isoformat()}]")
     return "\n\n".join(parts)
 
 
-def _build_account_props(client):
+def _build_account_props(client, is_initial_create=False):
     """Compose SF Account properties using STANDARD fields only.
     PR 2 deliberately avoids any XO__c custom fields — that's a v2
-    commercial line item via an AppExchange package."""
+    commercial line item via an AppExchange package.
+
+    is_initial_create: when True (POST to new Account), prefix Description
+    with the [Synced from XO Capture] marker. Subsequent PATCHes pass False
+    so the marker isn't re-applied (and existing marker on adopted Accounts
+    is left untouched)."""
     props = {'Name': client['company_name']}
     if client.get('website_url'):
         props['Website'] = client['website_url'][:255]
     if client.get('industry'):
         props['Industry'] = client['industry'][:40]
-    props['Description'] = _build_account_description(client)
+    desc = _build_account_description(client)
+    if is_initial_create:
+        desc = f"{sf_push.SYNCED_PREFIX}\n\n{desc}".rstrip()
+    props['Description'] = desc[:32000]
     return props
 
 
@@ -218,9 +229,11 @@ def _find_account_by_name(conn, account_id, tokens, name):
 
 
 def _create_or_update_account(conn, account_id, tokens, client, existing_sf_id):
-    """POST a new Account or PATCH an existing one. Returns SF Account Id."""
-    props = _build_account_props(client)
+    """POST a new Account or PATCH an existing one. Returns SF Account Id.
+    Threads is_initial_create through so the [Synced from XO Capture] prefix
+    is applied only on the POST path (new Account), not on PATCH."""
     if existing_sf_id:
+        props = _build_account_props(client, is_initial_create=False)
         status, body = sf_call_with_refresh(
             conn, account_id, tokens, 'PATCH',
             f'/sobjects/Account/{existing_sf_id}', json_body=props,
@@ -228,6 +241,7 @@ def _create_or_update_account(conn, account_id, tokens, client, existing_sf_id):
         if status in (200, 204):
             return existing_sf_id
         raise RuntimeError(f"SF Account PATCH failed: status={status} body={body}")
+    props = _build_account_props(client, is_initial_create=True)
     status, body = sf_call_with_refresh(
         conn, account_id, tokens, 'POST', '/sobjects/Account/', json_body=props,
     )
@@ -550,10 +564,25 @@ def handle_sync_push(event, user):
         finally:
             cur.close()
         existing_sf_id = link_row[0] if link_row else None
+        # Bidi push policy: no auto-link on exact name match. Run the
+        # match_sf_account flow which only auto-links on a high-confidence
+        # domain match. Name matches flag for manual review and persist
+        # candidates to clients.salesforce_match_candidates so the UI can
+        # surface a resolution modal. Engagement push cannot complete
+        # without a Task target, so flag_candidates returns 409 here and
+        # the caller is expected to retry after the user resolves.
         if not existing_sf_id:
-            existing_sf_id = _find_account_by_name(
-                conn, account_id, tokens, client['company_name']
+            push_client = sf_push.load_client_for_push(conn, client['id'])
+            decision, payload = sf_push.match_sf_account(
+                conn, account_id, tokens, push_client or client
             )
+            if decision == 'flag_candidates':
+                sf_push._set_status(conn, client['id'], 'awaiting_manual_link',
+                                    candidates=payload)
+                return _err(409, "Awaiting manual SF link — possible matches found. "
+                                 "Resolve in the UI before pushing engagement.")
+            if decision == 'link':
+                existing_sf_id = payload
 
         sf_account_id = _create_or_update_account(
             conn, account_id, tokens, client, existing_sf_id
@@ -943,9 +972,202 @@ def _apply_take_sf(conn, account_id, tokens, record_type, sf_id):
 
 
 # ──────────────────────────────────────────────
+# Bidirectional push routes (XO client → SF Account)
+# ──────────────────────────────────────────────
+def _extract_client_path_id(event):
+    """Pull {id} out of /salesforce/clients/{id}/... — try pathParameters
+    first, fall back to splitting the path string."""
+    path_params = event.get('pathParameters') or {}
+    cid = path_params.get('id') or path_params.get('client_id')
+    if cid:
+        return cid
+    parts = [p for p in event.get('path', '').split('/') if p]
+    if 'clients' in parts:
+        i = parts.index('clients')
+        if len(parts) > i + 1:
+            return parts[i + 1]
+    return None
+
+
+def _account_id_for_push(conn, user, client_id):
+    """Push routes operate on the JWT account_id, BUT super_admin needs to
+    push on behalf of an account that owns the client. Resolve to the
+    owning account if the actor is super_admin, else require JWT account_id.
+    """
+    if user.get('account_role') == 'super_admin' or user.get('is_admin'):
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT account_id FROM clients WHERE id = %s",
+                        (client_id,))
+            row = cur.fetchone()
+        finally:
+            cur.close()
+        if row and row[0]:
+            return row[0], None
+        # Fall through to JWT account_id (super_admin without an impersonated
+        # client context).
+    aid = user.get('account_id')
+    if aid is None:
+        return None, _err(400, "User has no account_id; SF push requires "
+                               "an account-scoped session")
+    return aid, None
+
+
+def handle_push_one(event, user):
+    """POST /salesforce/clients/{id}/push — admin-triggered single push.
+
+    Used for explicit retry of a failed client and for any UI surface that
+    wants to push one specific client without running push-all."""
+    client_id = _extract_client_path_id(event)
+    if not client_id:
+        return _err(400, "client_id required in path")
+
+    conn = get_db_connection()
+    try:
+        account_id, err = _account_id_for_push(conn, user, client_id)
+        if err:
+            return err
+        if not can_user_access_client(conn, user, client_id, write=True):
+            return _err(403, "Client does not belong to your account, "
+                             "or your share grant is read-only")
+        tokens = read_account_tokens(conn, account_id)
+        if not tokens:
+            return _err(412, "Salesforce not connected for this account")
+        outcome = sf_push.push_client(conn, account_id, tokens, client_id, 'update')
+        return _ok(outcome)
+    finally:
+        conn.close()
+
+
+def handle_resolve_match(event, user):
+    """POST /salesforce/clients/{id}/resolve-match  body: {action, sf_account_id?}
+
+    Completes a push that was paused in 'awaiting_manual_link' status by
+    either linking to a chosen candidate or creating a new SF Account."""
+    client_id = _extract_client_path_id(event)
+    if not client_id:
+        return _err(400, "client_id required in path")
+
+    try:
+        body = json.loads(event.get('body') or '{}')
+    except json.JSONDecodeError:
+        return _err(400, "Invalid JSON body")
+    action = body.get('action')
+    sf_account_id = body.get('sf_account_id')
+    if action not in ('link', 'create_new'):
+        return _err(400, "action must be 'link' or 'create_new'")
+    if action == 'link' and not sf_account_id:
+        return _err(400, "sf_account_id required when action='link'")
+
+    conn = get_db_connection()
+    try:
+        account_id, err = _account_id_for_push(conn, user, client_id)
+        if err:
+            return err
+        if not can_user_access_client(conn, user, client_id, write=True):
+            return _err(403, "Client does not belong to your account, "
+                             "or your share grant is read-only")
+        tokens = read_account_tokens(conn, account_id)
+        if not tokens:
+            return _err(412, "Salesforce not connected for this account")
+        outcome = sf_push.resolve_match(
+            conn, account_id, tokens, client_id, action, sf_account_id
+        )
+        return _ok(outcome)
+    finally:
+        conn.close()
+
+
+def handle_push_all(event, user):
+    """POST /salesforce/sync/push-all — push every pending/failed client
+    owned by the JWT account. Skips awaiting_manual_link (user must resolve)."""
+    account_id, err = _require_account_id(user)
+    if err:
+        return err
+    conn = get_db_connection()
+    try:
+        tokens = read_account_tokens(conn, account_id)
+        if not tokens:
+            return _err(412, "Salesforce not connected for this account")
+        summary = sf_push.push_all_pending(conn, account_id, tokens)
+        return _ok({'push': summary})
+    finally:
+        conn.close()
+
+
+def handle_sync_now(event, user):
+    """POST /salesforce/sync/now — combined pull + push entry point.
+
+    Runs the existing pull (Account / Contact / Opportunity) first so XO
+    has the latest SF state, then pushes any pending/failed client changes
+    back. Returns both halves of the result. The 'last_pull_at' tracking
+    in system_config keys is updated by pull_* helpers; the UI surfaces
+    this as 'Last sync' once both directions run."""
+    account_id, err = _require_account_id(user)
+    if err:
+        return err
+
+    conn = get_db_connection()
+    try:
+        tokens = read_account_tokens(conn, account_id)
+        if not tokens:
+            return _err(412, "Salesforce not connected for this account. "
+                             "Call POST /salesforce/connect first.")
+
+        pull = {
+            'accounts': pull_accounts(conn, account_id, tokens),
+            'contacts': pull_contacts(conn, account_id, tokens),
+            'opportunities': pull_opportunities(conn, account_id, tokens),
+        }
+        push = sf_push.push_all_pending(conn, account_id, tokens)
+        return _ok({'pulled': True, 'pull': pull, 'push': push})
+    finally:
+        conn.close()
+
+
+def handle_internal_push(event):
+    """Direct lambda.invoke entry — no JWT, no API Gateway.
+
+    Triggered by xo-clients after a successful client create / update / delete.
+    Payload: {internal_action: 'push_client', client_id, change_type, account_id}
+
+    account_id is the OWNING account of the client (from xo-clients context);
+    we trust it because the only callers of this path are other XO Lambdas in
+    the same AWS account (gated by the lambda:InvokeFunction IAM grant on
+    xo-lambda-role)."""
+    client_id = event.get('client_id')
+    change_type = event.get('change_type', 'update')
+    owning_account_id = event.get('account_id')
+    if not client_id:
+        return {'status': 'failed', 'error': 'client_id required'}
+    if not owning_account_id:
+        return {'status': 'failed', 'error': 'account_id required'}
+
+    conn = get_db_connection()
+    try:
+        tokens = read_account_tokens(conn, owning_account_id)
+        if not tokens:
+            # Account isn't SF-connected; mark skipped and move on. The
+            # caller's status-check should have prevented this, but it's
+            # cheap to verify here too.
+            return {'status': 'skipped', 'reason': 'SF not connected'}
+        outcome = sf_push.push_client(
+            conn, owning_account_id, tokens, client_id, change_type
+        )
+        return outcome
+    finally:
+        conn.close()
+
+
+# ──────────────────────────────────────────────
 # Lambda handler / router
 # ──────────────────────────────────────────────
 def lambda_handler(event, context):
+    # Internal lambda.invoke from sibling lambdas (xo-clients write-path).
+    # No httpMethod, no JWT — auth is the cross-lambda IAM grant.
+    if event.get('internal_action') == 'push_client':
+        return handle_internal_push(event)
+
     if event.get('httpMethod') == 'OPTIONS':
         return {'statusCode': 200, 'headers': CORS_HEADERS, 'body': ''}
 
@@ -987,6 +1209,17 @@ def _route_salesforce(event, user, path, method):
         return handle_status(event, user)
     if '/salesforce/disconnect' in path and method == 'POST':
         return handle_disconnect(event, user)
+    # Bidirectional push routes. Order matters — sub-paths under
+    # /salesforce/clients/{id}/... check first so they don't collide with
+    # other /salesforce/ prefixes.
+    if '/salesforce/clients/' in path and path.rstrip('/').endswith('/resolve-match') and method == 'POST':
+        return handle_resolve_match(event, user)
+    if '/salesforce/clients/' in path and path.rstrip('/').endswith('/push') and method == 'POST':
+        return handle_push_one(event, user)
+    if '/salesforce/sync/push-all' in path and method == 'POST':
+        return handle_push_all(event, user)
+    if '/salesforce/sync/now' in path and method == 'POST':
+        return handle_sync_now(event, user)
     if '/salesforce/sync/push' in path and method == 'POST':
         return handle_sync_push(event, user)
     if '/salesforce/sync/pull' in path and method == 'POST':

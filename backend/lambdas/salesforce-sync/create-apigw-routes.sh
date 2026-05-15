@@ -181,13 +181,27 @@ echo "  /salesforce/status                           = ${SF_STATUS_ID}"
 SF_DISCONNECT_ID=$(get_or_create_resource "${SF_ID}" "disconnect")
 echo "  /salesforce/disconnect                       = ${SF_DISCONNECT_ID}"
 
-# /salesforce/sync + push/pull
+# /salesforce/sync + push/pull/push-all/now
 SF_SYNC_ID=$(get_or_create_resource "${SF_ID}" "sync")
 echo "  /salesforce/sync                             = ${SF_SYNC_ID}"
 SF_SYNC_PUSH_ID=$(get_or_create_resource "${SF_SYNC_ID}" "push")
 echo "  /salesforce/sync/push                        = ${SF_SYNC_PUSH_ID}"
 SF_SYNC_PULL_ID=$(get_or_create_resource "${SF_SYNC_ID}" "pull")
 echo "  /salesforce/sync/pull                        = ${SF_SYNC_PULL_ID}"
+SF_SYNC_PUSHALL_ID=$(get_or_create_resource "${SF_SYNC_ID}" "push-all")
+echo "  /salesforce/sync/push-all                    = ${SF_SYNC_PUSHALL_ID}"
+SF_SYNC_NOW_ID=$(get_or_create_resource "${SF_SYNC_ID}" "now")
+echo "  /salesforce/sync/now                         = ${SF_SYNC_NOW_ID}"
+
+# /salesforce/clients/{id}/push + resolve-match (bidi push routes)
+SF_CLIENTS_ID=$(get_or_create_resource "${SF_ID}" "clients")
+echo "  /salesforce/clients                          = ${SF_CLIENTS_ID}"
+SF_CLIENTS_ID_ID=$(get_or_create_resource "${SF_CLIENTS_ID}" "{id}")
+echo "  /salesforce/clients/{id}                     = ${SF_CLIENTS_ID_ID}"
+SF_CLIENTS_PUSH_ID=$(get_or_create_resource "${SF_CLIENTS_ID_ID}" "push")
+echo "  /salesforce/clients/{id}/push                = ${SF_CLIENTS_PUSH_ID}"
+SF_CLIENTS_RESOLVE_ID=$(get_or_create_resource "${SF_CLIENTS_ID_ID}" "resolve-match")
+echo "  /salesforce/clients/{id}/resolve-match       = ${SF_CLIENTS_RESOLVE_ID}"
 
 # /salesforce/conflicts + {log_id}/resolve
 SF_CONFLICTS_ID=$(get_or_create_resource "${SF_ID}" "conflicts")
@@ -214,6 +228,10 @@ wire_path "${SF_STATUS_ID}"            GET  "/salesforce/status"
 wire_path "${SF_DISCONNECT_ID}"        POST "/salesforce/disconnect"
 wire_path "${SF_SYNC_PUSH_ID}"         POST "/salesforce/sync/push"
 wire_path "${SF_SYNC_PULL_ID}"         POST "/salesforce/sync/pull"
+wire_path "${SF_SYNC_PUSHALL_ID}"      POST "/salesforce/sync/push-all"
+wire_path "${SF_SYNC_NOW_ID}"          POST "/salesforce/sync/now"
+wire_path "${SF_CLIENTS_PUSH_ID}"      POST "/salesforce/clients/{id}/push"
+wire_path "${SF_CLIENTS_RESOLVE_ID}"   POST "/salesforce/clients/{id}/resolve-match"
 wire_path "${SF_CONFLICTS_ID}"         GET  "/salesforce/conflicts"
 wire_path "${SF_CONFLICTS_RESOLVE_ID}" POST "/salesforce/conflicts/{log_id}/resolve"
 wire_path "${WH_SF_OB_ID}"             POST "/webhooks/salesforce/outbound-message"
@@ -252,6 +270,10 @@ cat <<EOF
   POST /salesforce/disconnect
   POST /salesforce/sync/push
   POST /salesforce/sync/pull
+  POST /salesforce/sync/push-all
+  POST /salesforce/sync/now
+  POST /salesforce/clients/{id}/push
+  POST /salesforce/clients/{id}/resolve-match
   GET  /salesforce/conflicts
   POST /salesforce/conflicts/{log_id}/resolve
   POST /webhooks/salesforce/outbound-message

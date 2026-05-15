@@ -825,6 +825,10 @@ function DashboardScreen({ onSelectClient, onCreateClient, isAdmin, isAccount, a
   // PR 4: cross-tenant share modal — separate from shareLinkClient (which
   // is the magic-link / client_contact flow).
   const [shareWithClient, setShareWithClient] = useState(null)
+  // Bidi SF push: when a client.salesforce_push_status='awaiting_manual_link',
+  // clicking its banner opens this modal listing the candidate SF Accounts
+  // returned by the matcher so the user can pick Link or Create New.
+  const [sfMatchClient, setSfMatchClient] = useState(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [filterPartner, setFilterPartner] = useState('')
   const [filterIndustry, setFilterIndustry] = useState('')
@@ -994,6 +998,33 @@ function DashboardScreen({ onSelectClient, onCreateClient, isAdmin, isAccount, a
                 whiteSpace: 'nowrap',
               }}>
               Shared from {client.account_name || 'partner'}
+            </span>
+          )}
+          {client.salesforce_push_status === 'awaiting_manual_link' && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setSfMatchClient(client) }}
+              title="Possible Salesforce match — review"
+              style={{
+                fontSize: '0.65rem', fontWeight: 600,
+                padding: '0.1rem 0.4rem', borderRadius: 6,
+                background: '#fefce8', color: '#854d0e',
+                border: '1px solid #eab308',
+                whiteSpace: 'nowrap', cursor: 'pointer',
+              }}
+            >
+              Possible SF match — Review
+            </button>
+          )}
+          {client.salesforce_push_status === 'failed' && (
+            <span title={client.salesforce_push_error || 'Salesforce push failed'}
+              style={{
+                fontSize: '0.65rem', fontWeight: 600,
+                padding: '0.1rem 0.4rem', borderRadius: 6,
+                background: '#fef2f2', color: '#991b1b',
+                border: '1px solid #fecaca',
+                whiteSpace: 'nowrap',
+              }}>
+              SF push failed
             </span>
           )}
         </span>
@@ -1205,9 +1236,19 @@ function DashboardScreen({ onSelectClient, onCreateClient, isAdmin, isAccount, a
             <h3 style={{ fontSize: '1rem', fontWeight: 700, color: '#1a1a1a', marginBottom: '0.5rem' }}>
               Delete {deleteConfirmClient.company_name}?
             </h3>
-            <p style={{ fontSize: '0.85rem', color: '#444444', marginBottom: '1.25rem', lineHeight: 1.5 }}>
+            <p style={{ fontSize: '0.85rem', color: '#444444', marginBottom: deleteConfirmClient.has_sf_link ? '0.5rem' : '1.25rem', lineHeight: 1.5 }}>
               This will permanently remove the client and all their sources, enrichments, and branding. This cannot be undone.
             </p>
+            {deleteConfirmClient.has_sf_link && (
+              <p style={{
+                fontSize: '0.75rem', color: '#854d0e',
+                background: '#fefce8', border: '1px solid #eab308',
+                borderRadius: '6px', padding: '0.5rem 0.75rem',
+                marginBottom: '1.25rem', lineHeight: 1.4,
+              }}>
+                The linked Salesforce Account will be marked inactive — it will NOT be deleted from Salesforce.
+              </p>
+            )}
             <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
               <button
                 onClick={() => setDeleteConfirmClient(null)}
@@ -1234,6 +1275,147 @@ function DashboardScreen({ onSelectClient, onCreateClient, isAdmin, isAccount, a
           </div>
         </div>
       )}
+
+      {sfMatchClient && (
+        <SfMatchModal
+          client={sfMatchClient}
+          onClose={() => setSfMatchClient(null)}
+          onResolved={() => {
+            setSfMatchClient(null)
+            if (typeof fetchClients === 'function') {
+              try { fetchClients() } catch {}
+            }
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+// Bidi SF push — resolution modal. Shown when a client.salesforce_push_status
+// is 'awaiting_manual_link': the matcher found one or more SF Accounts whose
+// Name matches the XO client's name. User picks an Account to link, or asks
+// the backend to create a brand-new SF Account.
+function SfMatchModal({ client, onClose, onResolved }) {
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState(null)
+  const candidates = Array.isArray(client.salesforce_match_candidates)
+    ? client.salesforce_match_candidates
+    : []
+
+  const resolve = async (action, sf_account_id) => {
+    setBusy(true)
+    setErr(null)
+    try {
+      const res = await fetch(
+        `${API_BASE}/salesforce/clients/${client.id}/resolve-match`,
+        {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          body: JSON.stringify({ action, sf_account_id }),
+        },
+      )
+      const data = await res.json()
+      if (!res.ok || data.status === 'failed') {
+        setErr(data.error || 'Resolution failed')
+        setBusy(false)
+        return
+      }
+      onResolved && onResolved()
+    } catch (e) {
+      setErr(e.message)
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div style={{
+      position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+      background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center',
+      justifyContent: 'center', zIndex: 100,
+    }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: '#ffffff', borderRadius: 12, padding: '1.5rem',
+        maxWidth: 520, width: '90%',
+        boxShadow: '0 8px 32px rgba(0,0,0,0.18)',
+      }}>
+        <h3 style={{ fontSize: '1rem', fontWeight: 700, marginBottom: '0.5rem' }}>
+          Possible Salesforce match — {client.company_name}
+        </h3>
+        <p style={{ fontSize: '0.825rem', color: '#444', lineHeight: 1.5, marginBottom: '1rem' }}>
+          We found one or more existing Salesforce Accounts whose name matches
+          this client. Link to one of them, or create a new Account in Salesforce.
+        </p>
+        {candidates.length === 0 && (
+          <p style={{ fontSize: '0.8rem', color: '#666', fontStyle: 'italic' }}>
+            No candidate details available. You can still create a new Account.
+          </p>
+        )}
+        {candidates.map((c) => (
+          <div key={c.sf_id} style={{
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            border: '1px solid #e5e7eb', borderRadius: 8,
+            padding: '0.65rem 0.85rem', marginBottom: '0.5rem',
+          }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: '0.875rem', fontWeight: 600, color: '#1a1a1a' }}>
+                {c.name || '(no name)'}
+              </div>
+              {c.website && (
+                <div style={{ fontSize: '0.7rem', color: '#6b7280' }}>{c.website}</div>
+              )}
+              <div style={{ fontSize: '0.65rem', color: '#9ca3af', fontFamily: 'monospace' }}>
+                {c.sf_id}
+              </div>
+            </div>
+            <button
+              disabled={busy}
+              onClick={() => resolve('link', c.sf_id)}
+              style={{
+                padding: '0.35rem 0.85rem', borderRadius: 6, fontSize: '0.75rem',
+                fontWeight: 600, background: '#00a1e0', color: '#fff',
+                border: 'none', cursor: busy ? 'wait' : 'pointer',
+                opacity: busy ? 0.6 : 1,
+              }}
+            >
+              Link to this Account
+            </button>
+          </div>
+        ))}
+        {err && (
+          <div style={{
+            marginTop: '0.5rem', padding: '0.5rem 0.75rem', borderRadius: 6,
+            background: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca',
+            fontSize: '0.75rem',
+          }}>{err}</div>
+        )}
+        <div style={{ display: 'flex', justifyContent: 'space-between',
+                       marginTop: '1rem', gap: '0.5rem' }}>
+          <button
+            disabled={busy}
+            onClick={onClose}
+            style={{
+              padding: '0.5rem 1rem', borderRadius: 8, fontSize: '0.85rem',
+              background: '#f3f4f6', border: '1px solid #d1d5db',
+              color: '#333', cursor: busy ? 'wait' : 'pointer', fontWeight: 500,
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            disabled={busy}
+            onClick={() => resolve('create_new')}
+            style={{
+              padding: '0.5rem 1rem', borderRadius: 8, fontSize: '0.85rem',
+              background: '#0F969C', border: 'none',
+              color: '#fff', cursor: busy ? 'wait' : 'pointer', fontWeight: 600,
+              opacity: busy ? 0.6 : 1,
+            }}
+          >
+            Create new in Salesforce
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -9598,7 +9780,7 @@ function ConfigurationScreen({ theme, toggleTheme, buttons, setButtons, systemBu
               </div>
               <div>
               <p style={{ fontSize: '0.75rem', color: C.muted, marginBottom: '0.75rem', lineHeight: 1.4 }}>
-                Sync with Salesforce. Per-tenant — each account connects its own Salesforce org. Account, Contact, and Opportunity changes pull from Salesforce into XO Capture. Engagement summaries push from XO to Salesforce automatically when generated.
+                Sync with Salesforce. Per-tenant — each account connects its own Salesforce org. Account, Contact, and Opportunity changes pull from Salesforce into XO Capture. Client creates, updates, and soft-deletes push from XO to Salesforce. Engagement summaries push automatically when generated.
               </p>
 
               {salesforceError === 'token_expired' && (
@@ -9697,7 +9879,7 @@ function ConfigurationScreen({ theme, toggleTheme, buttons, setButtons, systemBu
                       borderRadius: 8, border: `1px solid ${C.border}`,
                       fontSize: '0.75rem', color: C.muted,
                     }}>
-                      <span style={{ fontWeight: 600 }}>Last pull:</span>{' '}
+                      <span style={{ fontWeight: 600 }}>Last sync:</span>{' '}
                       {new Date(salesforceLastPullAt).toLocaleString()}
                     </div>
                   )}
@@ -9721,20 +9903,32 @@ function ConfigurationScreen({ theme, toggleTheme, buttons, setButtons, systemBu
                       onClick={async () => {
                         setSalesforcePulling(true)
                         try {
-                          const res = await fetch(`${API_BASE}/salesforce/sync/pull`, {
+                          const res = await fetch(`${API_BASE}/salesforce/sync/now`, {
                             method: 'POST', headers: getAuthHeaders(),
                           })
                           const data = await res.json()
                           if (res.ok && data.pulled) {
-                            const a = data.accounts || {}
-                            const c = data.contacts || {}
-                            const o = data.opportunities || {}
+                            const pull = data.pull || {}
+                            const push = data.push || {}
+                            const a = pull.accounts || {}
+                            const c = pull.contacts || {}
+                            const o = pull.opportunities || {}
+                            const pushSummary =
+                              `Push: ${push.pushed || 0} pushed` +
+                              (push.failed ? `, ${push.failed} failed` : '') +
+                              (push.awaiting_manual_link ? `, ${push.awaiting_manual_link} need review` : '')
                             setSalesforceSyncResult({
                               success: true,
-                              msg: `Accounts: ${a.pulled || 0} updated, ${a.created || 0} new. ` +
+                              msg: `Pull — Accounts: ${a.pulled || 0} updated, ${a.created || 0} new. ` +
                                    `Contacts: ${c.inserted || 0} new, ${c.pulled || 0} updated. ` +
-                                   `Opportunities: ${o.pulled || 0} updated, ${o.created || 0} new.`,
+                                   `Opportunities: ${o.pulled || 0} updated, ${o.created || 0} new. ` +
+                                   pushSummary,
                             })
+                            // Refresh client list so any newly flagged
+                            // awaiting_manual_link clients pick up their banner.
+                            if (typeof fetchClients === 'function') {
+                              try { fetchClients() } catch {}
+                            }
                             // Refresh status to pick up new last_pull_at + conflict count.
                             fetch(`${API_BASE}/salesforce/status`, { headers: getAuthHeaders() })
                               .then(r => r.ok ? r.json() : null)
@@ -9765,7 +9959,7 @@ function ConfigurationScreen({ theme, toggleTheme, buttons, setButtons, systemBu
                       }}
                     >
                       {salesforcePulling ? <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /> : <RefreshCw size={16} />}
-                      {salesforcePulling ? 'Pulling...' : 'Sync Now'}
+                      {salesforcePulling ? 'Syncing...' : 'Sync Now'}
                     </button>
                     <button
                       onClick={async () => {
@@ -9798,7 +9992,7 @@ function ConfigurationScreen({ theme, toggleTheme, buttons, setButtons, systemBu
                     </button>
                   </div>
                   <p style={{ fontSize: '0.65rem', color: C.muted, fontStyle: 'italic', margin: 0, lineHeight: 1.4 }}>
-                    Sync Now pulls Accounts, Contacts, and Opportunities from Salesforce into XO. Disconnect revokes this account's OAuth grant — you'll need to re-authorize to reconnect.
+                    Sync Now pulls Accounts, Contacts, and Opportunities from Salesforce, then pushes XO client changes to Salesforce. Disconnect revokes this account's OAuth grant — you'll need to re-authorize to reconnect.
                   </p>
                   {salesforceSyncResult && (
                     <div style={{
