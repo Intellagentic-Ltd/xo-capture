@@ -15,6 +15,7 @@ import urllib.error
 import urllib.parse
 from datetime import datetime, timezone, timedelta
 from auth_helper import require_auth, get_db_connection, CORS_HEADERS, log_activity
+from client_access import clients_where_fragment, can_user_access_client
 try:
     from crypto_helper import (
         encrypt, decrypt, encrypt_json, decrypt_json, search_hash,
@@ -1059,31 +1060,16 @@ def handle_list_clients(event, user):
             LEFT JOIN users u ON c.user_id = u.id
             LEFT JOIN accounts a ON c.account_id = a.id
         """
-        account_role = user.get('account_role')
-
-        if account_role == 'super_admin' or user.get('is_admin'):
-            # Super admin: see all clients
-            cur.execute(base_query + " ORDER BY c.updated_at DESC")
-        elif account_role == 'account_admin':
-            # Account admin: see all clients in their account
-            cur.execute(base_query + " WHERE c.account_id = %s ORDER BY c.updated_at DESC", (user.get('account_id'),))
-        elif account_role in ('account_user', 'client_contact', 'contributor'):
-            # Scoped user: only assigned clients
-            print(f"[DEBUG] account_user list: user_id={user['user_id']}, account_role={account_role}")
-            cur.execute("SELECT count(*) FROM user_client_assignments WHERE user_id = %s", (user['user_id'],))
-            acount = cur.fetchone()[0]
-            print(f"[DEBUG] assignments count for {user['user_id']}: {acount}")
-            cur.execute(base_query + " JOIN user_client_assignments uca ON c.id = uca.client_id WHERE uca.user_id = %s ORDER BY c.updated_at DESC", (user['user_id'],))
-        elif user.get('is_account') and user.get('account_id'):
-            # Legacy partner user fallback
-            cur.execute(base_query + " WHERE c.account_id = %s ORDER BY c.updated_at DESC", (user['account_id'],))
-        elif user.get('is_client') and user.get('client_id'):
-            cur.execute(base_query + " WHERE c.s3_folder = %s ORDER BY c.updated_at DESC", (user['client_id'],))
-        else:
-            cur.execute(base_query + " WHERE c.user_id = %s ORDER BY c.updated_at DESC", (user['user_id'],))
-
+        # PR 3.4: single source of truth for cross-tenant + role-based access.
+        # Helper returns ('TRUE', ()) for super admins so the same code path
+        # serves every role; the WHERE clause stays uniform.
+        where_frag, where_params = clients_where_fragment(user, alias='c')
+        cur.execute(
+            f"{base_query} WHERE {where_frag} ORDER BY c.updated_at DESC",
+            where_params,
+        )
         rows = cur.fetchall()
-        print(f"[DEBUG] handle_list_clients: account_role={account_role}, user_id={user.get('user_id')}, rows_returned={len(rows)}")
+        print(f"[DEBUG] handle_list_clients: account_role={user.get('account_role')}, user_id={user.get('user_id')}, rows_returned={len(rows)}")
         cur.close()
         conn.close()
 
@@ -1167,24 +1153,14 @@ def handle_get_client(event, user):
                        approved_at, company_linkedin, poc_scope
                 FROM clients
             """
-            account_role = user.get('account_role')
-            if user.get('is_admin') or (user.get('is_client') and user.get('client_id') == client_id):
-                cur.execute(base_select + " WHERE s3_folder = %s", (client_id,))
-            elif account_role == 'account_admin' and user.get('account_id') is not None:
-                cur.execute(base_select + " WHERE s3_folder = %s AND account_id = %s",
-                            (client_id, user['account_id']))
-            elif account_role in ('account_user', 'contributor', 'client_contact'):
-                cur.execute(base_select + """
-                    WHERE s3_folder = %s
-                      AND (user_id = %s
-                           OR id IN (SELECT client_id FROM user_client_assignments WHERE user_id = %s))
-                """, (client_id, user['user_id'], user['user_id']))
-            elif user.get('is_account') and user.get('account_id'):
-                cur.execute(base_select + " WHERE s3_folder = %s AND account_id = %s",
-                            (client_id, user['account_id']))
-            else:
-                cur.execute(base_select + " WHERE s3_folder = %s AND user_id = %s",
-                            (client_id, user['user_id']))
+            # PR 3.4: helper covers every JWT role including the cross-tenant
+            # share path for account_admin. base_select uses unaliased
+            # `FROM clients`, so we pass alias='clients' to the helper.
+            where_frag, where_params = clients_where_fragment(user, alias='clients')
+            cur.execute(
+                f"{base_select} WHERE s3_folder = %s AND ({where_frag})",
+                (client_id,) + where_params,
+            )
         else:
             # Fetch most recent client for this user
             cur.execute("""
@@ -1466,44 +1442,47 @@ def handle_update_client(event, user):
             set_fields.append("company_linkedin = %s")
             params.append(body['company_linkedin'].strip())
 
-        account_role = user.get('account_role')
-        if user.get('is_admin') or (user.get('is_client') and user.get('client_id') == client_id):
-            params.append(client_id)
-            cur.execute(f"""
-                UPDATE clients SET {', '.join(set_fields)}
-                WHERE s3_folder = %s
-                RETURNING id
-            """, params)
-        elif account_role == 'account_admin' and user.get('account_id') is not None:
-            params.extend([client_id, user['account_id']])
-            cur.execute(f"""
-                UPDATE clients SET {', '.join(set_fields)}
-                WHERE s3_folder = %s AND account_id = %s
-                RETURNING id
-            """, params)
-        elif account_role in ('account_user', 'contributor', 'client_contact'):
-            params.extend([client_id, user['user_id'], user['user_id']])
-            cur.execute(f"""
-                UPDATE clients SET {', '.join(set_fields)}
-                WHERE s3_folder = %s
-                  AND (user_id = %s
-                       OR id IN (SELECT client_id FROM user_client_assignments WHERE user_id = %s))
-                RETURNING id
-            """, params)
-        elif user.get('is_account') and user.get('account_id'):
-            params.extend([client_id, user['account_id']])
-            cur.execute(f"""
-                UPDATE clients SET {', '.join(set_fields)}
-                WHERE s3_folder = %s AND account_id = %s
-                RETURNING id
-            """, params)
-        else:
-            params.extend([client_id, user['user_id']])
-            cur.execute(f"""
-                UPDATE clients SET {', '.join(set_fields)}
-                WHERE s3_folder = %s AND user_id = %s
-                RETURNING id
-            """, params)
+        # PR 3.4: writes require write-access (owner OR 'read_write' share).
+        # Helper produces the WHERE fragment; we append it to the UPDATE.
+        # Note: this is a write, so for share users it requires 'read_write'
+        # — but the WHERE fragment alone doesn't enforce that. The schema-
+        # level guard is in can_user_access_client used elsewhere; for UPDATE
+        # we additionally check the share permission in the WHERE clause by
+        # gating on (account_admin in owning account) OR (read_write share).
+        where_frag, where_params = clients_where_fragment(user, alias='clients')
+        # For writers, narrow the share branch to read_write only when the
+        # WHERE fragment includes shares. Cleanest: re-run the write check
+        # via can_user_access_client to bail early before constructing the
+        # SQL, then use s3_folder match (helper still enforces ownership).
+        # Look up the client_id by s3_folder first to call the helper.
+        cur.execute("SELECT id FROM clients WHERE s3_folder = %s", (client_id,))
+        id_row = cur.fetchone()
+        if not id_row:
+            cur.close()
+            conn.close()
+            return {
+                'statusCode': 404,
+                'headers': CORS_HEADERS,
+                'body': json.dumps({'error': 'Client not found'}),
+            }
+        if not can_user_access_client(conn, user, id_row[0], write=True):
+            cur.close()
+            conn.close()
+            return {
+                'statusCode': 403,
+                'headers': CORS_HEADERS,
+                'body': json.dumps({
+                    'error': 'You do not have write access to this client. '
+                             'A read_only share grant cannot perform writes.'
+                }),
+            }
+
+        params.extend((client_id,) + where_params)
+        cur.execute(f"""
+            UPDATE clients SET {', '.join(set_fields)}
+            WHERE s3_folder = %s AND ({where_frag})
+            RETURNING id
+        """, params)
 
         row = cur.fetchone()
         conn.commit()

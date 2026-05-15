@@ -34,6 +34,11 @@ def mock_deps():
         'get_db_connection': patch('lambda_function.get_db_connection', return_value=mock_conn),
         'require_auth': patch('lambda_function.require_auth'),
         's3_client': patch('lambda_function.s3_client', mock_s3),
+        # PR 3.4: patch the helper so role-specific SQL inspection tests
+        # don't depend on the helper's own DB lookups (account_id + UCA
+        # subqueries) inflating the fetchone sequence.
+        'can_user_access_client': patch('lambda_function.can_user_access_client',
+                                        return_value=True),
     }
     started = {k: p.start() for k, p in patches.items()}
     yield started, mock_conn, mock_cur, mock_s3
@@ -242,9 +247,14 @@ class TestUpdateClient:
         assert_status(response, 400)
 
     def test_account_user_update_uses_uca_predicate(self, clients_module, mock_deps):
+        """PR 3.4: WHERE is produced by clients_where_fragment. For
+        account_user the fragment is a UCA subquery."""
         started, _, mock_cur, _ = mock_deps
         started['require_auth'].return_value = (ACCOUNT_USER, None)
-        mock_cur.fetchone.return_value = ('row-id',)
+        # _get_client_key fetchone + pre-check fetchone + UPDATE RETURNING.
+        # can_user_access_client is patched True so its internal queries
+        # don't run.
+        mock_cur.fetchone.side_effect = [(None,), ('row-id',), ('row-id',)]
 
         event = make_event(method='PUT', path='/clients', body={
             'client_id': 'c123',
@@ -258,9 +268,12 @@ class TestUpdateClient:
             f"account_user UPDATE should reference UCA; got: {update_sql}"
 
     def test_account_admin_update_uses_account_id_predicate(self, clients_module, mock_deps):
+        """PR 3.4: account_admin fragment is owned-OR-shared. The OR
+        clause references client_shares. account_id is still bound."""
         started, _, mock_cur, _ = mock_deps
         started['require_auth'].return_value = (ACCOUNT_ADMIN_USER, None)
-        mock_cur.fetchone.return_value = ('row-id',)
+        # _get_client_key + pre-check + UPDATE RETURNING.
+        mock_cur.fetchone.side_effect = [(None,), ('row-id',), ('row-id',)]
 
         event = make_event(method='PUT', path='/clients', body={
             'client_id': 'c123',
@@ -271,8 +284,9 @@ class TestUpdateClient:
         update_sql = [s for s in executed_sql if s.lstrip().startswith('UPDATE clients')]
         assert update_sql
         chosen = update_sql[-1]
-        assert 'account_id = %s' in chosen and 'user_client_assignments' not in chosen, \
-            f"account_admin UPDATE should filter by account_id only; got: {chosen}"
+        assert 'account_id = %s' in chosen, f"got: {chosen}"
+        assert 'client_shares' in chosen, \
+            f"account_admin UPDATE must include share OR clause: {chosen}"
 
 
 class TestDeleteClient:
@@ -331,6 +345,8 @@ class TestListClients:
         assert 'WHERE c.user_id' not in chosen
 
     def test_account_user_list_query_uses_uca_join(self, clients_module, mock_deps):
+        """PR 3.4: helper produces an IN subquery rather than a JOIN —
+        same semantics, different SQL shape. Test now matches the substring."""
         started, _, mock_cur, _ = mock_deps
         started['require_auth'].return_value = (ACCOUNT_USER, None)
         mock_cur.fetchone.return_value = (0,)
@@ -339,10 +355,12 @@ class TestListClients:
         event = make_event(method='GET', path='/clients/list')
         clients_module.lambda_handler(event, None)
         executed_sql = [c.args[0] for c in mock_cur.execute.call_args_list]
-        joined = [s for s in executed_sql if 'JOIN user_client_assignments' in s]
+        joined = [s for s in executed_sql if 'user_client_assignments' in s]
         assert joined, f"expected UCA join in account_user list, got: {executed_sql}"
 
     def test_account_admin_list_query_filters_by_account(self, clients_module, mock_deps):
+        """PR 3.4: helper produces owned-OR-shared fragment. Both branches
+        must be present; the share branch references client_shares."""
         started, _, mock_cur, _ = mock_deps
         started['require_auth'].return_value = (ACCOUNT_ADMIN_USER, None)
         mock_cur.fetchall.return_value = []
@@ -353,7 +371,9 @@ class TestListClients:
         list_sql = [s for s in executed_sql if 'FROM clients c' in s]
         assert list_sql
         chosen = list_sql[-1]
-        assert 'WHERE c.account_id = %s' in chosen, f"got: {chosen}"
+        assert 'c.account_id = %s' in chosen, f"got: {chosen}"
+        assert 'client_shares' in chosen, \
+            f"account_admin list must include share OR clause: {chosen}"
 
 
 class TestPartners:
