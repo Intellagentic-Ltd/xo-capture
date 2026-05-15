@@ -9758,7 +9758,7 @@ function ConfigurationScreen({ theme, toggleTheme, buttons, setButtons, systemBu
                       }}
                     >
                       {salesforcePulling ? <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /> : <RefreshCw size={16} />}
-                      {salesforcePulling ? 'Pulling...' : 'Pull from Salesforce'}
+                      {salesforcePulling ? 'Pulling...' : 'Sync Now'}
                     </button>
                     <button
                       onClick={async () => {
