@@ -17,6 +17,7 @@ import os
 import boto3
 from datetime import datetime, timezone
 from auth_helper import require_auth, get_db_connection, CORS_HEADERS, log_activity
+from client_access import clients_where_fragment
 
 s3_client = boto3.client('s3')
 BUCKET_NAME = os.environ.get('BUCKET_NAME', 'xo-client-data-mv')
@@ -95,66 +96,46 @@ def lambda_handler(event, context):
 
 
 def _verify_client(cur, client_id, user_id, is_admin=False, is_client=False, user_client_id=None, is_account=False, account_id=None, account_role=None):
-    """Verify client exists and belongs to user. Returns (db_client_id, s3_folder) or None."""
-    if account_role == 'super_admin' or is_admin:
-        cur.execute("SELECT id, s3_folder FROM clients WHERE s3_folder = %s", (client_id,))
-    elif account_role == 'account_admin':
-        cur.execute("SELECT id, s3_folder FROM clients WHERE s3_folder = %s AND account_id = %s", (client_id, account_id))
-    elif account_role in ('account_user', 'client_contact', 'contributor'):
-        cur.execute("""
-            SELECT c.id, c.s3_folder FROM clients c
-            JOIN user_client_assignments uca ON c.id = uca.client_id
-            WHERE c.s3_folder = %s AND uca.user_id = %s
-        """, (client_id, user_id))
-    elif is_account and account_id:
-        cur.execute("SELECT id, s3_folder FROM clients WHERE s3_folder = %s AND account_id = %s", (client_id, account_id))
-    elif is_client and user_client_id and client_id == user_client_id:
-        cur.execute("SELECT id, s3_folder FROM clients WHERE s3_folder = %s", (client_id,))
-    else:
-        cur.execute(
-            "SELECT id, s3_folder FROM clients WHERE s3_folder = %s AND user_id = %s",
-            (client_id, user_id)
-        )
+    """Verify client exists and belongs to user. Returns (db_client_id, s3_folder) or None.
+
+    PR 3.4b: role-fork replaced with shared/client_access fragment so the
+    cross-tenant share path is honoured uniformly across lambdas."""
+    user = {
+        'user_id': user_id, 'is_admin': is_admin, 'is_client': is_client,
+        'client_id': user_client_id, 'is_account': is_account,
+        'account_id': account_id, 'account_role': account_role,
+    }
+    frag, params = clients_where_fragment(user, alias='c')
+    cur.execute(
+        f"SELECT c.id, c.s3_folder FROM clients c WHERE c.s3_folder = %s AND ({frag})",
+        (client_id,) + params,
+    )
     row = cur.fetchone()
     if row:
         return str(row[0]), row[1]
     return None, None
 
 
-def _verify_upload_ownership(cur, upload_id, user_id, is_admin=False, is_client=False, user_client_id=None, is_account=False, account_id=None):
-    """Verify upload belongs to user via client join (admins can access any, accounts scoped to their clients, client-token users scoped). Returns upload row or None."""
-    if is_admin:
-        cur.execute("""
-            SELECT u.id, u.client_id, u.filename, u.file_type, u.s3_key, u.status,
+def _verify_upload_ownership(cur, upload_id, user_id, is_admin=False, is_client=False, user_client_id=None, is_account=False, account_id=None, account_role=None):
+    """Verify upload belongs to user via client join. Returns upload row or None.
+
+    PR 3.4b: role-fork replaced with shared/client_access fragment. Added
+    account_role kwarg (defaults None; new account_admin recipient-with-share
+    path needs it to recognise the cross-tenant share grant)."""
+    user = {
+        'user_id': user_id, 'is_admin': is_admin, 'is_client': is_client,
+        'client_id': user_client_id, 'is_account': is_account,
+        'account_id': account_id, 'account_role': account_role,
+    }
+    frag, params = clients_where_fragment(user, alias='c')
+    cur.execute(
+        f"""SELECT u.id, u.client_id, u.filename, u.file_type, u.s3_key, u.status,
                    u.file_size, u.version, u.source, c.s3_folder
             FROM uploads u
             JOIN clients c ON u.client_id = c.id
-            WHERE u.id = %s
-        """, (upload_id,))
-    elif is_account and account_id:
-        cur.execute("""
-            SELECT u.id, u.client_id, u.filename, u.file_type, u.s3_key, u.status,
-                   u.file_size, u.version, u.source, c.s3_folder
-            FROM uploads u
-            JOIN clients c ON u.client_id = c.id
-            WHERE u.id = %s AND c.account_id = %s
-        """, (upload_id, account_id))
-    elif is_client and user_client_id:
-        cur.execute("""
-            SELECT u.id, u.client_id, u.filename, u.file_type, u.s3_key, u.status,
-                   u.file_size, u.version, u.source, c.s3_folder
-            FROM uploads u
-            JOIN clients c ON u.client_id = c.id
-            WHERE u.id = %s AND c.s3_folder = %s
-        """, (upload_id, user_client_id))
-    else:
-        cur.execute("""
-            SELECT u.id, u.client_id, u.filename, u.file_type, u.s3_key, u.status,
-                   u.file_size, u.version, u.source, c.s3_folder
-            FROM uploads u
-            JOIN clients c ON u.client_id = c.id
-            WHERE u.id = %s AND c.user_id = %s
-        """, (upload_id, user_id))
+            WHERE u.id = %s AND ({frag})""",
+        (upload_id,) + params,
+    )
     return cur.fetchone()
 
 
@@ -401,7 +382,7 @@ def handle_delete_upload(event, user):
     conn = get_db_connection()
     cur = conn.cursor()
 
-    row = _verify_upload_ownership(cur, upload_id, user['user_id'], user.get('is_admin', False), user.get('is_client', False), user.get('client_id'), user.get('is_account', False), user.get('account_id'))
+    row = _verify_upload_ownership(cur, upload_id, user['user_id'], user.get('is_admin', False), user.get('is_client', False), user.get('client_id'), user.get('is_account', False), user.get('account_id'), user.get('account_role'))
     if not row:
         cur.close()
         conn.close()
@@ -451,7 +432,7 @@ def handle_toggle_upload(event, user):
     conn = get_db_connection()
     cur = conn.cursor()
 
-    row = _verify_upload_ownership(cur, upload_id, user['user_id'], user.get('is_admin', False), user.get('is_client', False), user.get('client_id'), user.get('is_account', False), user.get('account_id'))
+    row = _verify_upload_ownership(cur, upload_id, user['user_id'], user.get('is_admin', False), user.get('is_client', False), user.get('client_id'), user.get('is_account', False), user.get('account_id'), user.get('account_role'))
     if not row:
         cur.close()
         conn.close()
@@ -507,7 +488,7 @@ def handle_replace_upload(event, user):
     conn = get_db_connection()
     cur = conn.cursor()
 
-    row = _verify_upload_ownership(cur, upload_id, user['user_id'], user.get('is_admin', False), user.get('is_client', False), user.get('client_id'), user.get('is_account', False), user.get('account_id'))
+    row = _verify_upload_ownership(cur, upload_id, user['user_id'], user.get('is_admin', False), user.get('is_client', False), user.get('client_id'), user.get('is_account', False), user.get('account_id'), user.get('account_role'))
     if not row:
         cur.close()
         conn.close()

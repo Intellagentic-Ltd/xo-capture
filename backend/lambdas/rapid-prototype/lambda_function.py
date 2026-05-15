@@ -20,6 +20,7 @@ def slugify_problem(title):
     s = s.strip('-')
     return s or 'unknown'
 from auth_helper import require_auth, get_db_connection, CORS_HEADERS, log_activity
+from client_access import clients_where_fragment
 try:
     from crypto_helper import unwrap_client_key, decrypt_s3_body, maybe_decrypt_s3_body
 except ImportError:
@@ -113,20 +114,14 @@ def _handle_prototype(event, user):
         conn = get_db_connection()
         cur = conn.cursor()
 
-        if user.get('is_admin'):
-            cur.execute("""
-                SELECT company_name, website_url, contact_name, contact_title,
-                       industry, description, pain_point, encryption_key
-                FROM clients
-                WHERE s3_folder = %s
-            """, (client_id,))
-        else:
-            cur.execute("""
-                SELECT company_name, website_url, contact_name, contact_title,
-                       industry, description, pain_point, encryption_key
-                FROM clients
-                WHERE s3_folder = %s AND user_id = %s
-            """, (client_id, user['user_id']))
+        # PR 3.4b: share-aware access via shared/client_access fragment.
+        frag, frag_params = clients_where_fragment(user, alias='c')
+        cur.execute(f"""
+            SELECT c.company_name, c.website_url, c.contact_name, c.contact_title,
+                   c.industry, c.description, c.pain_point, c.encryption_key
+            FROM clients c
+            WHERE c.s3_folder = %s AND ({frag})
+        """, (client_id,) + frag_params)
 
         row = cur.fetchone()
         if not row:

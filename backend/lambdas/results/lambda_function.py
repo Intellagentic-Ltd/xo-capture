@@ -8,6 +8,7 @@ import os
 import re
 import boto3
 from auth_helper import require_auth, get_db_connection, CORS_HEADERS, log_activity
+from client_access import clients_where_fragment
 try:
     from crypto_helper import unwrap_client_key, decrypt_s3_body, client_decrypt, client_decrypt_json, maybe_decrypt_s3_body
 except ImportError:
@@ -29,8 +30,6 @@ def _get_enrichment_results(client_id, user, engagement_id=None):
     conn = get_db_connection()
     cur = conn.cursor()
 
-    is_admin = user.get('is_admin', False) or user.get('role') == 'admin'
-
     # Build engagement filter
     eng_filter = ""
     eng_params = []
@@ -38,37 +37,15 @@ def _get_enrichment_results(client_id, user, engagement_id=None):
         eng_filter = " AND e.engagement_id = %s"
         eng_params = [engagement_id]
 
-    account_role = user.get('account_role')
-
-    if account_role == 'super_admin' or is_admin:
-        cur.execute(f"""
-            SELECT e.status, e.results_s3_key, e.stage, c.encryption_key, e.error_message
-            FROM enrichments e JOIN clients c ON e.client_id = c.id
-            WHERE c.s3_folder = %s{eng_filter}
-            ORDER BY e.started_at DESC LIMIT 1
-        """, (client_id, *eng_params))
-    elif account_role == 'account_admin':
-        cur.execute(f"""
-            SELECT e.status, e.results_s3_key, e.stage, c.encryption_key, e.error_message
-            FROM enrichments e JOIN clients c ON e.client_id = c.id
-            WHERE c.s3_folder = %s AND c.account_id = %s{eng_filter}
-            ORDER BY e.started_at DESC LIMIT 1
-        """, (client_id, user.get('account_id'), *eng_params))
-    elif account_role in ('account_user', 'client_contact', 'contributor'):
-        cur.execute(f"""
-            SELECT e.status, e.results_s3_key, e.stage, c.encryption_key, e.error_message
-            FROM enrichments e JOIN clients c ON e.client_id = c.id
-            JOIN user_client_assignments uca ON c.id = uca.client_id
-            WHERE c.s3_folder = %s AND uca.user_id = %s{eng_filter}
-            ORDER BY e.started_at DESC LIMIT 1
-        """, (client_id, user['user_id'], *eng_params))
-    else:
-        cur.execute(f"""
-            SELECT e.status, e.results_s3_key, e.stage, c.encryption_key, e.error_message
-            FROM enrichments e JOIN clients c ON e.client_id = c.id
-            WHERE c.s3_folder = %s AND c.user_id = %s{eng_filter}
-            ORDER BY e.started_at DESC LIMIT 1
-        """, (client_id, user['user_id'], *eng_params))
+    # PR 3.4b: shared/client_access drives the role-based filter, including
+    # the cross-tenant share path for account_admin recipients.
+    access_frag, access_params = clients_where_fragment(user, alias='c')
+    cur.execute(f"""
+        SELECT e.status, e.results_s3_key, e.stage, c.encryption_key, e.error_message
+        FROM enrichments e JOIN clients c ON e.client_id = c.id
+        WHERE c.s3_folder = %s AND ({access_frag}){eng_filter}
+        ORDER BY e.started_at DESC LIMIT 1
+    """, (client_id, *access_params, *eng_params))
 
     row = cur.fetchone()
     cur.close()
