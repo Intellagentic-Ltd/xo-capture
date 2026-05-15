@@ -26,6 +26,7 @@ cp sf_pull.py package/
 cp sf_contact_pull.py package/
 cp sf_opportunity_pull.py package/
 cp sf_webhook.py package/
+cp sf_push.py package/
 cp ../shared/auth_helper.py package/
 cp ../shared/crypto_helper.py package/
 cp ../shared/integrations_config.py package/

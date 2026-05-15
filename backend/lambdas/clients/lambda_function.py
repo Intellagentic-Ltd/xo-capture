@@ -440,6 +440,172 @@ def _run_sharing_migration():
 _run_sharing_migration()
 
 
+# ── Auto-migration: bidirectional SF push tracking columns ──
+# Lives on `clients` (not on client_salesforce_links) because we need to track
+# unlinked-but-attempted clients too — e.g. awaiting_manual_link clients won't
+# have a link row yet but still need a status surfaceable to the UI.
+# Independent try/except per the two-transaction pattern from PR #89 so a
+# failure here doesn't roll back the sharing migration above.
+def _run_bidi_push_migration():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            ALTER TABLE clients
+            ADD COLUMN IF NOT EXISTS salesforce_push_status VARCHAR(20),
+            ADD COLUMN IF NOT EXISTS salesforce_push_error TEXT,
+            ADD COLUMN IF NOT EXISTS salesforce_push_last_attempt TIMESTAMP WITH TIME ZONE,
+            ADD COLUMN IF NOT EXISTS salesforce_match_candidates JSONB
+        """)
+        cur.execute("""
+            ALTER TABLE accounts
+            ADD COLUMN IF NOT EXISTS salesforce_has_active_field BOOLEAN,
+            ADD COLUMN IF NOT EXISTS salesforce_has_sync_field BOOLEAN
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("Bidirectional push migration complete.")
+    except Exception as e:
+        print(f"Bidirectional push migration skipped: {e}")
+
+
+_run_bidi_push_migration()
+
+
+# ──────────────────────────────────────────────
+# Bidirectional Salesforce push hooks
+# ──────────────────────────────────────────────
+# After every successful client write we trigger the xo-salesforce-sync
+# lambda to push the change to SF. Create / update fire ASYNCHRONOUSLY
+# (InvocationType=Event) so the user's client write isn't blocked on a SF
+# round-trip. Delete fires SYNCHRONOUSLY (InvocationType=RequestResponse)
+# because the XO row is hard-deleted right after — we want the inactive
+# PATCH to land first while the client data is still available to read.
+#
+# Push targets are gated on the account having a connected SF token in
+# system_config. Failures are logged and never block the client write.
+
+_lambda_invoke_client = boto3.client('lambda', region_name='eu-west-2')
+SALESFORCE_SYNC_LAMBDA = 'xo-salesforce-sync'
+
+
+def _is_account_sf_connected(conn, account_id):
+    """Cheap check — does this account have a stored SF access token?
+    A single row in system_config keyed on (account_id, 'salesforce_access_token')
+    is the source of truth for connection state."""
+    if not account_id:
+        return False
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT 1 FROM system_config "
+            "WHERE account_id = %s AND config_key = 'salesforce_access_token' "
+            "LIMIT 1",
+            (account_id,),
+        )
+        return cur.fetchone() is not None
+    except Exception as e:
+        print(f"SF connection check failed for account {account_id} (non-fatal): {e}")
+        return False
+    finally:
+        cur.close()
+
+
+def _mark_push_pending(conn, db_client_id):
+    """Set salesforce_push_status='pending' so the UI can show 'queued'
+    between the write and the async push landing."""
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE clients SET salesforce_push_status = 'pending', "
+            "salesforce_push_error = NULL, salesforce_push_last_attempt = NOW() "
+            "WHERE id = %s",
+            (db_client_id,),
+        )
+        conn.commit()
+    except Exception as e:
+        print(f"Failed to mark client {db_client_id} push pending (non-fatal): {e}")
+    finally:
+        cur.close()
+
+
+def _enqueue_sf_push_async(db_client_id, account_id, change_type):
+    """Fire-and-forget async invoke of xo-salesforce-sync. Used for
+    create + update. Returns nothing — caller does not wait."""
+    try:
+        _lambda_invoke_client.invoke(
+            FunctionName=SALESFORCE_SYNC_LAMBDA,
+            InvocationType='Event',
+            Payload=json.dumps({
+                'internal_action': 'push_client',
+                'client_id': str(db_client_id),
+                'account_id': int(account_id),
+                'change_type': change_type,
+            }).encode(),
+        )
+    except Exception as e:
+        # Non-fatal — push will be retried by Sync Now in the UI.
+        print(f"SF push enqueue failed for client {db_client_id} "
+              f"(change={change_type}): {e}")
+
+
+def _push_sf_sync(db_client_id, account_id, change_type, timeout_ms=20000):
+    """Synchronous invoke for the delete path — we want the SF inactive
+    PATCH to land before the XO row is hard-deleted. Returns the outcome
+    dict from xo-salesforce-sync or None on transport failure (the caller
+    proceeds with the XO delete regardless)."""
+    try:
+        resp = _lambda_invoke_client.invoke(
+            FunctionName=SALESFORCE_SYNC_LAMBDA,
+            InvocationType='RequestResponse',
+            Payload=json.dumps({
+                'internal_action': 'push_client',
+                'client_id': str(db_client_id),
+                'account_id': int(account_id),
+                'change_type': change_type,
+            }).encode(),
+        )
+        payload = resp.get('Payload')
+        if payload is None:
+            return None
+        raw = payload.read()
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    except Exception as e:
+        print(f"SF sync push failed for client {db_client_id} "
+              f"(change={change_type}): {e}")
+        return None
+
+
+def _maybe_trigger_sf_push(conn, db_client_id, account_id, change_type,
+                           synchronous=False):
+    """Convenience wrapper: skip if account isn't SF-connected, else fire
+    the appropriate invoke. For create/update use synchronous=False (async).
+    For delete use synchronous=True so we observe the outcome."""
+    # Explicit log so a silent skip is always visible — distinguishes
+    # "no account_id" (data bug) from "no SF token row" (org not connected).
+    if not account_id:
+        print(f"SF push skipped for client {db_client_id} (change={change_type}): "
+              f"no account_id resolved for this client")
+        return None
+    if not _is_account_sf_connected(conn, account_id):
+        print(f"SF push skipped for client {db_client_id} (change={change_type}): "
+              f"account {account_id} has no salesforce_access_token in system_config")
+        return None
+    print(f"SF push enqueued for client {db_client_id} (change={change_type}, "
+          f"account={account_id}, sync={synchronous})")
+    if synchronous:
+        return _push_sf_sync(db_client_id, account_id, change_type)
+    _mark_push_pending(conn, db_client_id)
+    _enqueue_sf_push_async(db_client_id, account_id, change_type)
+    return None
+
+
 def _get_client_key(cur, s3_folder):
     """Look up and unwrap a client's encryption key by s3_folder. Returns raw key bytes or None."""
     try:
@@ -1060,7 +1226,14 @@ def handle_list_clients(event, user):
                    c.updated_by,
                    COALESCE(c.nda_signed, FALSE) as nda_signed,
                    c.existing_apps,
-                   c.nda_signed_at
+                   c.nda_signed_at,
+                   c.salesforce_push_status,
+                   c.salesforce_push_error,
+                   c.salesforce_match_candidates,
+                   EXISTS (
+                     SELECT 1 FROM client_salesforce_links l
+                      WHERE l.client_id = c.id AND l.account_id = c.account_id
+                   ) AS has_sf_link
             FROM clients c
             LEFT JOIN users u ON c.user_id = u.id
             LEFT JOIN accounts a ON c.account_id = a.id
@@ -1092,6 +1265,12 @@ def handle_list_clients(event, user):
                 except Exception:
                     pass
 
+            sf_candidates = row[21]
+            if sf_candidates and isinstance(sf_candidates, str):
+                try:
+                    sf_candidates = json.loads(sf_candidates)
+                except (json.JSONDecodeError, TypeError):
+                    sf_candidates = None
             clients.append({
                 'id': str(row[0]),
                 'company_name': row[1] or '',
@@ -1111,7 +1290,11 @@ def handle_list_clients(event, user):
                 'updated_by': row[15] or '',
                 'ndaSigned': bool(row[16]),
                 'existingApps': row[17] or '',
-                'ndaSignedAt': row[18].isoformat() if row[18] else None
+                'ndaSignedAt': row[18].isoformat() if row[18] else None,
+                'salesforce_push_status': row[19],
+                'salesforce_push_error': row[20],
+                'salesforce_match_candidates': sf_candidates,
+                'has_sf_link': bool(row[22]),
             })
 
         return {
@@ -1486,11 +1669,14 @@ def handle_update_client(event, user):
         cur.execute(f"""
             UPDATE clients SET {', '.join(set_fields)}
             WHERE s3_folder = %s AND ({where_frag})
-            RETURNING id
+            RETURNING id, account_id
         """, params)
 
         row = cur.fetchone()
         conn.commit()
+        # Capture for the bidi SF push hook after S3 regeneration completes.
+        updated_db_id = row[0] if row else None
+        updated_account_id = row[1] if row else None
 
         # Regenerate client-config.md in S3
         s3_enc = is_s3_encryption_enabled(cur)
@@ -1518,6 +1704,11 @@ def handle_update_client(event, user):
         )
 
         cur.close()
+
+        # Bidi SF push (async) after the DB commit + S3 regeneration.
+        if updated_db_id and updated_account_id:
+            _maybe_trigger_sf_push(conn, updated_db_id, updated_account_id,
+                                   'update', synchronous=False)
         conn.close()
 
         if not row:
@@ -1685,11 +1876,14 @@ def handle_delete_client(event, user):
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Verify ownership and get DB id (admins can access any client)
+        # Verify ownership and get DB id + account_id (admins can access any client)
         if user.get('is_admin'):
-            cur.execute("SELECT id FROM clients WHERE s3_folder = %s", (client_id,))
+            cur.execute("SELECT id, account_id FROM clients WHERE s3_folder = %s",
+                        (client_id,))
         else:
-            cur.execute("SELECT id FROM clients WHERE s3_folder = %s AND user_id = %s", (client_id, user['user_id']))
+            cur.execute("SELECT id, account_id FROM clients "
+                        "WHERE s3_folder = %s AND user_id = %s",
+                        (client_id, user['user_id']))
         row = cur.fetchone()
 
         if not row:
@@ -1701,8 +1895,22 @@ def handle_delete_client(event, user):
                 'body': json.dumps({'error': 'Client not found'})
             }
 
+        db_client_id = row[0]
+        owning_account_id = row[1]
+
+        # Bidirectional SF push: mark the linked SF Account inactive BEFORE
+        # the XO row is removed. Synchronous invoke so the inactive PATCH
+        # lands while the client fields are still readable. The XO delete
+        # proceeds regardless of SF outcome — see the brief decision log:
+        # "Then proceed with the existing hard delete + S3 wipe."
+        sf_push_result = _maybe_trigger_sf_push(
+            conn, db_client_id, owning_account_id, 'delete', synchronous=True,
+        )
+        if sf_push_result:
+            print(f"SF inactive push for client {client_id}: {sf_push_result}")
+
         # Delete from DB (cascades to uploads, enrichments, skills)
-        cur.execute("DELETE FROM clients WHERE id = %s", (row[0],))
+        cur.execute("DELETE FROM clients WHERE id = %s", (db_client_id,))
         conn.commit()
         cur.close()
         conn.close()
@@ -2503,9 +2711,18 @@ def handle_create_client(event, user):
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Accounts auto-assign their account_id to new clients
-        account_id_val = body.get('account_id')  # int or None
-        if user.get('is_account') and user.get('account_id'):
+        # Account-id resolution:
+        #   1. body.account_id wins when explicitly set — preserves the
+        #      super_admin / admin cross-account create path.
+        #   2. Otherwise default to the caller's account_id claim. Covers
+        #      every JWT shape we ship: legacy is_account, modern
+        #      account_role (account_admin / account_user / contributor /
+        #      super_admin), and any future role-based variant. Without
+        #      this fallback super_admin creates leave clients.account_id
+        #      NULL and the SF bidi push guard correctly but unhelpfully
+        #      skips with "no account_id resolved for this client".
+        account_id_val = body.get('account_id')
+        if account_id_val is None and user.get('account_id'):
             account_id_val = user['account_id']
         intellagentic_lead_val = bool(body.get('intellagentic_lead', False))
 
@@ -2554,6 +2771,11 @@ def handle_create_client(event, user):
         """, (db_id, 'analysis-template', f"{client_id}/skills/analysis-template.md"))
         conn.commit()
         cur2.close()
+
+        # Bidi SF push (async). Reuses the same conn for the connected-check,
+        # then closes. Skipped silently for accounts with no SF connection.
+        _maybe_trigger_sf_push(conn, db_id, account_id_val, 'create',
+                               synchronous=False)
         conn.close()
 
         print(f"Created client: {client_id} (db: {db_id}) for company: {company_name}")
