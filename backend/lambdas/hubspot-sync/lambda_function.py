@@ -95,10 +95,18 @@ CUSTOM_PROPERTY_DEFS = [
 
 _properties_ensured = False
 
-def _ensure_custom_properties(access_token):
-    """Create custom HubSpot company properties if they don't exist. Runs once per container."""
+def _ensure_custom_properties(conn, access_token):
+    """Create custom HubSpot company properties if they don't exist.
+    First sync per HubSpot portal does the work; subsequent syncs short-circuit
+    via the system_config flag hubspot_properties_initialized so we don't
+    re-POST 12 properties (all returning 409) on every cold start.
+    HubSpot is a single global portal in this integration, so the flag is
+    NULL-scoped in system_config (matches the hubspot_* namespace contract)."""
     global _properties_ensured
     if _properties_ensured:
+        return
+    if _get_config(conn, 'hubspot_properties_initialized') == 'true':
+        _properties_ensured = True
         return
     for prop_def in CUSTOM_PROPERTY_DEFS:
         try:
@@ -111,6 +119,7 @@ def _ensure_custom_properties(access_token):
                 logger.warning("Failed to create property %s: %s", prop_def['name'], e)
         except Exception as e:
             logger.warning("Failed to create property %s: %s", prop_def['name'], e)
+    _set_config(conn, 'hubspot_properties_initialized', 'true')
     _properties_ensured = True
 
 
@@ -1445,7 +1454,7 @@ def handle_sync(event, user):
             }
 
         # Ensure custom properties exist in HubSpot
-        _ensure_custom_properties(access_token)
+        _ensure_custom_properties(conn, access_token)
 
         intellagentic_company_id = _get_config(conn, 'hubspot_intellagentic_company_id')
 
@@ -2065,7 +2074,7 @@ def handle_webhook(event):
 
     conn = get_db_connection()
     try:
-        _ensure_custom_properties(access_token)
+        _ensure_custom_properties(conn, access_token)
 
         clients_created, clients_updated, conflicts = _pull_companies(access_token, conn, 'client')
         accounts_created, accounts_updated, _ = _pull_companies(access_token, conn, 'partner')
