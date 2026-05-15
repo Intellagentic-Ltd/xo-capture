@@ -378,6 +378,7 @@ _run_integrations_migration()
 #                                     clients rows where salesforce_account_id
 #                                     is not null.
 def _run_sharing_migration():
+    # Transaction 1: schema only. Must persist independently of backfill.
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -399,10 +400,7 @@ def _run_sharing_migration():
             "ON client_shares(shared_with_account_id)"
         )
 
-        # 2. client_salesforce_links — per-tenant SF mapping.
-        # PR 3.5 will route salesforce-sync reads/writes through this table
-        # and drop the legacy clients.salesforce_account_id /
-        # salesforce_last_sync columns. PR 3.4 dual-writes to both.
+        # 2. client_salesforce_links — per-tenant SF mapping (post-PR3.5 source of truth).
         cur.execute("""
             CREATE TABLE IF NOT EXISTS client_salesforce_links (
                 client_id UUID NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
@@ -417,7 +415,20 @@ def _run_sharing_migration():
             "ON client_salesforce_links(salesforce_account_id)"
         )
 
-        # 3. Backfill from legacy clients columns. Idempotent (ON CONFLICT).
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("Sharing migration (schema) complete: client_shares + client_salesforce_links ensured.")
+    except Exception as e:
+        print(f"Sharing migration (schema) failed: {e}")
+        return  # If schema didn't land, backfill is pointless
+
+    # Transaction 2: backfill from legacy column. Will fail cleanly post-PR3.5
+    # because clients.salesforce_account_id was dropped — and that's fine, the
+    # backfill is a one-time legacy migration. Schema above is what matters.
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
         cur.execute("""
             INSERT INTO client_salesforce_links
                 (client_id, account_id, salesforce_account_id, salesforce_last_sync)
@@ -427,14 +438,13 @@ def _run_sharing_migration():
               AND account_id IS NOT NULL
             ON CONFLICT (client_id, account_id) DO NOTHING
         """)
-
         conn.commit()
         cur.close()
         conn.close()
-        print("Sharing migration complete: client_shares + client_salesforce_links "
-              "ensured; legacy SF columns backfilled.")
+        print("Sharing migration (backfill) complete.")
     except Exception as e:
-        print(f"Sharing migration check (non-fatal): {e}")
+        # Expected post-PR3.5: legacy column is gone. Schema is already committed.
+        print(f"Sharing migration (backfill) skipped: {e}")
 
 
 _run_sharing_migration()
