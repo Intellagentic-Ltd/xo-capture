@@ -365,21 +365,28 @@ def _query_accounts(conn, account_id, tokens, where_clause, limit=10,
         select_fields += f", {XO_SYNC_FIELD}"
     q = (f"SELECT {select_fields} FROM Account "
          f"WHERE {where_clause} LIMIT {limit}")
+    print(f"[sf_push._query_accounts] SOQL: {q}")
     status, body = sf_call_with_refresh(
         conn, account_id, tokens, 'GET', '/query/', params={'q': q}
     )
     if status != 200:
         logger.warning("SF query failed: status=%s body=%s where=%s",
                        status, body, where_clause)
+        print(f"[sf_push._query_accounts] FAILED status={status} body={body}")
         return []
+    records = body.get('records') or []
+    print(f"[sf_push._query_accounts] returned {len(records)} record(s)")
     out = []
-    for r in (body.get('records') or []):
+    for r in records:
         out.append({
             'sf_id': r['Id'],
             'name': r.get('Name') or '',
             'website': r.get('Website') or '',
             'xo_sync': r.get(XO_SYNC_FIELD) if has_sync_field else None,
         })
+    for c in out:
+        print(f"[sf_push._query_accounts]   id={c['sf_id']} name={c['name']!r} "
+              f"website={c['website']!r} xo_sync={c['xo_sync']}")
     return out
 
 
@@ -394,9 +401,14 @@ def match_sf_account(conn, account_id, tokens, client):
     Candidate dicts include `xo_sync` (true/false/null) so callers can gate
     push behaviour on the org-side opt-in flag."""
     has_sync = probe_sync_field(conn, account_id, tokens)
+    print(f"[match_sf_account] client_name={client.get('company_name')!r} "
+          f"website_url={client.get('website_url')!r} "
+          f"contact_email={client.get('contact_email')!r} "
+          f"has_sync_field={has_sync}")
 
     # 1. Domain match against Website.
     domain = _client_domain(client)
+    print(f"[match_sf_account] extracted domain={domain!r}")
     if domain:
         escaped = soql_escape(domain)
         # SOQL doesn't support ILIKE; LIKE with % wildcards is case-insensitive
@@ -407,9 +419,12 @@ def match_sf_account(conn, account_id, tokens, client):
             f"Website LIKE '%{escaped}%'",
             has_sync_field=has_sync,
         )
+        print(f"[match_sf_account] domain search returned {len(candidates)} candidate(s)")
         if len(candidates) == 1:
+            print(f"[match_sf_account] → AUTO-LINK to {candidates[0]['sf_id']}")
             return 'link', candidates[0]
         if len(candidates) > 1:
+            print(f"[match_sf_account] → FLAG (multiple domain matches)")
             return 'flag_candidates', candidates
 
     # 2. Exact name match — flag-only, never auto-link (per brief: name
@@ -421,10 +436,13 @@ def match_sf_account(conn, account_id, tokens, client):
             f"Name = '{soql_escape(name)}'",
             has_sync_field=has_sync,
         )
+        print(f"[match_sf_account] name search returned {len(candidates)} candidate(s)")
         if candidates:
+            print(f"[match_sf_account] → FLAG (name match)")
             return 'flag_candidates', candidates
 
     # 3. No match — create new.
+    print("[match_sf_account] → CREATE_NEW (no matches)")
     return 'create_new', None
 
 
@@ -496,9 +514,16 @@ def push_client(conn, account_id, tokens, client_id, change_type):
     change_type: 'create' | 'update' | 'delete' (informational; the actual
     SF call is selected by whether the client has an existing link).
     """
+    print(f"[push_client] ENTER client_id={client_id} account_id={account_id} "
+          f"change={change_type}")
     client = load_client_for_push(conn, client_id)
     if not client:
+        print(f"[push_client] client {client_id} not found → skipped")
         return {'status': 'skipped', 'reason': f'client {client_id} not found'}
+    print(f"[push_client] loaded client: name={client['company_name']!r} "
+          f"website_url={client['website_url']!r} "
+          f"contact_email={client['contact_email']!r} "
+          f"account_id={client['account_id']}")
     if not client.get('company_name'):
         _set_status(conn, client_id, 'failed',
                     error='Client has no company_name; SF Account.Name is required')
@@ -507,6 +532,7 @@ def push_client(conn, account_id, tokens, client_id, change_type):
         return {'status': 'skipped', 'reason': 'client has no account_id'}
 
     existing_sf_id = get_existing_link(conn, client_id, account_id)
+    print(f"[push_client] existing client_salesforce_links sf_id={existing_sf_id}")
 
     # ── Delete path: only act if linked. No link = nothing to mark inactive.
     if change_type == 'delete':
@@ -614,15 +640,34 @@ def push_all_pending(conn, account_id, tokens):
     cur = conn.cursor()
     try:
         cur.execute(
-            """SELECT id FROM clients
+            """SELECT id, company_name, salesforce_push_status
+               FROM clients
                WHERE account_id = %s
                  AND (salesforce_push_status IS NULL
                       OR salesforce_push_status IN ('pending', 'failed', 'skipped'))""",
             (account_id,),
         )
-        ids = [row[0] for row in cur.fetchall()]
+        rows = cur.fetchall()
     finally:
         cur.close()
+    ids = [row[0] for row in rows]
+    print(f"[push_all_pending] account_id={account_id} eligible_clients={len(ids)}")
+    for r in rows:
+        print(f"[push_all_pending]   {r[0]} name={r[1]!r} status={r[2]!r}")
+    # Also log clients in 'pushed' / 'awaiting_manual_link' for diagnostic visibility.
+    diag = conn.cursor()
+    try:
+        diag.execute(
+            """SELECT id, company_name, salesforce_push_status
+               FROM clients
+               WHERE account_id = %s
+                 AND salesforce_push_status IN ('pushed', 'awaiting_manual_link')""",
+            (account_id,),
+        )
+        for r in diag.fetchall():
+            print(f"[push_all_pending]   (excluded) {r[0]} name={r[1]!r} status={r[2]!r}")
+    finally:
+        diag.close()
 
     results = {'attempted': 0, 'pushed': 0, 'failed': 0,
                'awaiting_manual_link': 0, 'skipped': 0}

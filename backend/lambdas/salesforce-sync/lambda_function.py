@@ -1188,11 +1188,153 @@ def handle_internal_push(event):
 # ──────────────────────────────────────────────
 # Lambda handler / router
 # ──────────────────────────────────────────────
+def _diag_client(event):
+    """TEMPORARY diagnostic: lookup clients by company_name ILIKE pattern,
+    return their SF push state, and optionally reset salesforce_push_status
+    to 'pending' so push-all picks them up on next Sync Now.
+
+    Payload: {
+      'internal_action': 'diag_client',
+      'company_name': 'Test Company',   # ILIKE %pattern%
+      'reset_to_pending': bool,          # optional
+    }
+    Returns: list of matching client dicts.
+    TODO: remove before merge once smoke is green."""
+    pattern = event.get('company_name', '')
+    reset = bool(event.get('reset_to_pending'))
+    if not pattern:
+        return {'error': 'company_name required'}
+
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT c.id, c.company_name, c.account_id, c.website_url,
+                      c.contact_email, c.contacts_json,
+                      c.salesforce_push_status, c.salesforce_push_error,
+                      c.salesforce_match_candidates, c.salesforce_push_last_attempt,
+                      l.salesforce_account_id, l.salesforce_last_sync
+               FROM clients c
+               LEFT JOIN client_salesforce_links l
+                      ON l.client_id = c.id AND l.account_id = c.account_id
+               WHERE c.company_name ILIKE %s
+               ORDER BY c.updated_at DESC""",
+            (f'%{pattern}%',),
+        )
+        rows = cur.fetchall()
+        cur.close()
+
+        results = []
+        for r in rows:
+            contacts_json = r[5]
+            if isinstance(contacts_json, str):
+                try:
+                    contacts_json = json.loads(contacts_json)
+                except (json.JSONDecodeError, TypeError):
+                    contacts_json = None
+            candidates = r[8]
+            if isinstance(candidates, str):
+                try:
+                    candidates = json.loads(candidates)
+                except (json.JSONDecodeError, TypeError):
+                    candidates = None
+            results.append({
+                'id': str(r[0]),
+                'company_name': r[1],
+                'account_id': r[2],
+                'website_url': r[3],
+                'contact_email': r[4],
+                'contacts': contacts_json,
+                'salesforce_push_status': r[6],
+                'salesforce_push_error': r[7],
+                'salesforce_match_candidates': candidates,
+                'salesforce_push_last_attempt': r[9].isoformat() if r[9] else None,
+                'sf_link_account_id': r[10],
+                'sf_link_last_sync': r[11].isoformat() if r[11] else None,
+            })
+
+        if reset and results:
+            cur = conn.cursor()
+            try:
+                ids = [r['id'] for r in results]
+                cur.execute(
+                    """UPDATE clients
+                          SET salesforce_push_status = 'pending',
+                              salesforce_push_error = NULL,
+                              salesforce_match_candidates = NULL
+                        WHERE id = ANY(%s::uuid[])""",
+                    (ids,),
+                )
+                conn.commit()
+            finally:
+                cur.close()
+
+        return {'results': results, 'reset_applied': reset and bool(results)}
+    finally:
+        conn.close()
+
+
+def _diag_sf_account(event):
+    """TEMPORARY: fetch an SF Account by Id for a given XO account_id's
+    tokens. Lets us verify which SF Account got linked. Payload:
+      { 'internal_action': 'diag_sf_account',
+        'account_id': <int>, 'sf_id': '001...' }"""
+    account_id = event.get('account_id')
+    sf_id = event.get('sf_id')
+    if not (account_id and sf_id):
+        return {'error': 'account_id and sf_id required'}
+    conn = get_db_connection()
+    try:
+        tokens = read_account_tokens(conn, account_id)
+        if not tokens:
+            return {'error': 'SF not connected for this account'}
+        status, body = sf_call_with_refresh(
+            conn, account_id, tokens, 'GET',
+            f'/sobjects/Account/{sf_id}',
+        )
+        return {'status': status, 'account': body}
+    finally:
+        conn.close()
+
+
+def _diag_unlink(event):
+    """TEMPORARY: orphan a client_salesforce_links row so the next push
+    re-runs the matcher. Payload:
+      { 'internal_action': 'diag_unlink',
+        'client_id': '<uuid>', 'account_id': <int> }"""
+    client_id = event.get('client_id')
+    account_id = event.get('account_id')
+    if not (client_id and account_id):
+        return {'error': 'client_id and account_id required'}
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "DELETE FROM client_salesforce_links "
+                "WHERE client_id = %s AND account_id = %s",
+                (client_id, account_id),
+            )
+            deleted = cur.rowcount
+            conn.commit()
+        finally:
+            cur.close()
+        return {'deleted_link_rows': deleted}
+    finally:
+        conn.close()
+
+
 def lambda_handler(event, context):
     # Internal lambda.invoke from sibling lambdas (xo-clients write-path).
     # No httpMethod, no JWT — auth is the cross-lambda IAM grant.
     if event.get('internal_action') == 'push_client':
         return handle_internal_push(event)
+    if event.get('internal_action') == 'diag_client':
+        return _diag_client(event)
+    if event.get('internal_action') == 'diag_sf_account':
+        return _diag_sf_account(event)
+    if event.get('internal_action') == 'diag_unlink':
+        return _diag_unlink(event)
 
     if event.get('httpMethod') == 'OPTIONS':
         return {'statusCode': 200, 'headers': CORS_HEADERS, 'body': ''}
