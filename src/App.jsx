@@ -816,12 +816,15 @@ function ShareLinkModal({ clientId, onClose }) {
 // ============================================================
 // DASHBOARD SCREEN — Admin multi-client view
 // ============================================================
-function DashboardScreen({ onSelectClient, onCreateClient, isAdmin, isAccount, accounts, teamUsers }) {
+function DashboardScreen({ onSelectClient, onCreateClient, isAdmin, isAccount, accounts, teamUsers, user }) {
   const [clients, setClients] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [deleteConfirmClient, setDeleteConfirmClient] = useState(null)
   const [shareLinkClient, setShareLinkClient] = useState(null)
+  // PR 4: cross-tenant share modal — separate from shareLinkClient (which
+  // is the magic-link / client_contact flow).
+  const [shareWithClient, setShareWithClient] = useState(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [filterPartner, setFilterPartner] = useState('')
   const [filterIndustry, setFilterIndustry] = useState('')
@@ -967,8 +970,32 @@ function DashboardScreen({ onSelectClient, onCreateClient, isAdmin, isAccount, a
         </div>
       )}
       <div style={{ flex: '1 1 0', minWidth: 0, overflow: 'hidden' }}>
-        <span style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-primary)', display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-          {client.company_name}
+        <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+          <span style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {client.company_name}
+          </span>
+          {/* PR 4: cross-tenant share badge. When the row's owning account
+              differs from the viewer's account, this client is reaching the
+              viewer via a client_shares grant. The list endpoint already
+              returns the owner's account_id + account_name (see
+              handle_list_clients). Super admins see every row (no badge —
+              they're not "shared with" anyone).
+              When user is super_admin or has no account_id, we suppress the
+              badge to avoid the false "shared from Intellagentic" on
+              Intellagentic's own list. */}
+          {user && user.account_id != null && !user.is_admin &&
+           user.account_role !== 'super_admin' &&
+           client.account_id != null && client.account_id !== user.account_id && (
+            <span title={`Owned by ${client.account_name || 'another account'}`}
+              style={{
+                fontSize: '0.65rem', fontWeight: 600,
+                padding: '0.1rem 0.4rem', borderRadius: 6,
+                background: 'rgba(15, 150, 156, 0.12)', color: '#0F969C',
+                whiteSpace: 'nowrap',
+              }}>
+              Shared from {client.account_name || 'partner'}
+            </span>
+          )}
         </span>
         {isAdmin && client.account_name && (
           <span style={{ fontSize: '0.6875rem', color: 'var(--text-muted, #9ca3af)', display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -1004,10 +1031,31 @@ function DashboardScreen({ onSelectClient, onCreateClient, isAdmin, isAccount, a
         }}
         onMouseEnter={e => e.currentTarget.style.color = '#3b82f6'}
         onMouseLeave={e => e.currentTarget.style.color = 'var(--text-muted, #9ca3af)'}
-        title="Share link"
+        title="Share link (magic link for client contact)"
       >
         <ExternalLink size={13} />
       </button>
+      {/* PR 4: cross-tenant share button. Visible only when user is
+          super_admin AND the client is owned by the user's account.
+          Different feature from the magic-link share above — this grants
+          another XO account access to the client via client_shares. */}
+      {user && (user.is_admin || user.account_role === 'super_admin')
+        && client.account_id != null && client.account_id === user.account_id && (
+        <button
+          data-hover-btn
+          onClick={(e) => { e.stopPropagation(); setShareWithClient(client) }}
+          style={{
+            background: 'none', border: 'none', cursor: 'pointer', padding: '0.2rem',
+            color: 'var(--text-muted, #9ca3af)', borderRadius: '4px', display: 'flex', flexShrink: 0,
+            opacity: 0, transition: 'opacity 0.15s'
+          }}
+          onMouseEnter={e => e.currentTarget.style.color = '#0F969C'}
+          onMouseLeave={e => e.currentTarget.style.color = 'var(--text-muted, #9ca3af)'}
+          title="Share with another XO account"
+        >
+          <Share2 size={13} />
+        </button>
+      )}
       {isAdmin && (
         <button
           data-hover-btn
@@ -1106,6 +1154,18 @@ function DashboardScreen({ onSelectClient, onCreateClient, isAdmin, isAccount, a
         <ShareLinkModal
           clientId={shareLinkClient.client_id}
           onClose={() => setShareLinkClient(null)}
+        />
+      )}
+
+      {/* PR 4: cross-tenant share modal */}
+      {shareWithClient && (
+        <ShareClientModal
+          apiBase={API_BASE}
+          getAuthHeaders={getAuthHeaders}
+          clientId={shareWithClient.id}
+          clientName={shareWithClient.company_name}
+          isSuperAdmin={!!(user && (user.is_admin || user.account_role === 'super_admin'))}
+          onClose={() => setShareWithClient(null)}
         />
       )}
 
@@ -2839,6 +2899,7 @@ export default function App() {
             isAccount={isAccount}
             accounts={accounts}
             teamUsers={teamUsers}
+            user={user}
           />
         )}
         {currentScreen === 'upload' && (
