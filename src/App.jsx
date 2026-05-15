@@ -1035,12 +1035,26 @@ function DashboardScreen({ onSelectClient, onCreateClient, isAdmin, isAccount, a
       >
         <ExternalLink size={13} />
       </button>
-      {/* PR 4: cross-tenant share button. Visible only when user is
-          super_admin AND the client is owned by the user's account.
-          Different feature from the magic-link share above — this grants
-          another XO account access to the client via client_shares. */}
-      {user && (user.is_admin || user.account_role === 'super_admin')
-        && client.account_id != null && client.account_id === user.account_id && (
+      {/* PR 4 + hotfix: cross-tenant share button.
+          - XO ADMIN (is_admin=true, legacy role='admin') is system-wide
+            and typically has user.account_id = null/unset. They share
+            on behalf of any tenant, so we skip the ownership check.
+            The ShareClientModal's recipient picker still lists all
+            accounts so they pick the destination explicitly.
+          - super_admin / account_admin within an owning tenant can
+            share only clients THEY own — ownership check stays.
+          - Recipients can't re-grant onward (backend enforces this
+            even if the UI somehow slipped through).
+          - Type-coerce account_id comparison via Number() defensively
+            in case the JWT delivers a string for some reason. is_admin
+            doesn't need it (no comparison happens). */}
+      {user && (
+        user.is_admin ||
+        (['super_admin', 'account_admin'].includes(user.account_role)
+          && client.account_id != null
+          && user.account_id != null
+          && Number(client.account_id) === Number(user.account_id))
+      ) && (
         <button
           data-hover-btn
           onClick={(e) => { e.stopPropagation(); setShareWithClient(client) }}
