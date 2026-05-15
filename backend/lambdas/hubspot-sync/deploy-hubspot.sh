@@ -35,6 +35,9 @@ echo "Deploying to AWS Lambda: xo-hubspot-sync (eu-west-2)..."
 aws lambda update-function-code \
   --function-name xo-hubspot-sync \
   --zip-file fileb://function.zip \
-  --region eu-west-2
+  --region eu-west-2 \
+  --profile intellagentic \
+  --query '{LastModified:LastModified,CodeSha256:CodeSha256}' \
+  --output table
 
 echo "Deploy complete: xo-hubspot-sync"
