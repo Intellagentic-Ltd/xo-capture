@@ -361,6 +361,84 @@ def _run_integrations_migration():
 _run_integrations_migration()
 
 
+# ── Auto-migration: cross-tenant client sharing (PR 3.4) ──
+# Adds:
+#   1. client_shares                — grant table; account-level share of a
+#                                     single client. Composite PK on
+#                                     (client_id, shared_with_account_id).
+#   2. client_salesforce_links      — per-tenant SF mapping. The single-tenant
+#                                     clients.salesforce_account_id columns
+#                                     are kept populated via dual-write in
+#                                     salesforce-sync during the PR 3.4 → PR
+#                                     3.5 transition. PR 3.5 cuts SF over to
+#                                     this table and drops the legacy column.
+#   3. Backfill                     — idempotently populate
+#                                     client_salesforce_links from existing
+#                                     clients rows where salesforce_account_id
+#                                     is not null.
+def _run_sharing_migration():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        # 1. client_shares
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS client_shares (
+                client_id UUID NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+                shared_with_account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                granted_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                granted_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                permissions VARCHAR(20) NOT NULL DEFAULT 'read_write'
+                    CHECK (permissions IN ('read_only', 'read_write')),
+                PRIMARY KEY (client_id, shared_with_account_id)
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_client_shares_recipient "
+            "ON client_shares(shared_with_account_id)"
+        )
+
+        # 2. client_salesforce_links — per-tenant SF mapping.
+        # PR 3.5 will route salesforce-sync reads/writes through this table
+        # and drop the legacy clients.salesforce_account_id /
+        # salesforce_last_sync columns. PR 3.4 dual-writes to both.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS client_salesforce_links (
+                client_id UUID NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+                account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                salesforce_account_id VARCHAR(18),
+                salesforce_last_sync TIMESTAMP WITH TIME ZONE,
+                PRIMARY KEY (client_id, account_id)
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_client_sf_links_sf_account "
+            "ON client_salesforce_links(salesforce_account_id)"
+        )
+
+        # 3. Backfill from legacy clients columns. Idempotent (ON CONFLICT).
+        cur.execute("""
+            INSERT INTO client_salesforce_links
+                (client_id, account_id, salesforce_account_id, salesforce_last_sync)
+            SELECT id, account_id, salesforce_account_id, salesforce_last_sync
+            FROM clients
+            WHERE salesforce_account_id IS NOT NULL
+              AND account_id IS NOT NULL
+            ON CONFLICT (client_id, account_id) DO NOTHING
+        """)
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("Sharing migration complete: client_shares + client_salesforce_links "
+              "ensured; legacy SF columns backfilled.")
+    except Exception as e:
+        print(f"Sharing migration check (non-fatal): {e}")
+
+
+_run_sharing_migration()
+
+
 def _get_client_key(cur, s3_folder):
     """Look up and unwrap a client's encryption key by s3_folder. Returns raw key bytes or None."""
     try:

@@ -44,6 +44,7 @@ from sf_client import (
 )
 from sf_pull import pull_accounts
 from sf_webhook import handle_outbound_message
+from client_access import can_user_access_client
 
 logger = logging.getLogger('xo.salesforce')
 logger.setLevel(logging.INFO)
@@ -453,8 +454,11 @@ def handle_sync_push(event, user):
             'salesforce_account_id': row[10], 'account_id': row[11],
         }
 
-        if not user.get('is_admin') and client['account_id'] != account_id:
-            return _err(403, "Client does not belong to your account")
+        # PR 3.4: extend ownership check to include share grants. The
+        # recipient account needs a 'read_write' share (write=True) to push.
+        if not can_user_access_client(conn, user, client['id'], write=True):
+            return _err(403, "Client does not belong to your account, "
+                             "or your share grant is read-only")
 
         tokens = read_account_tokens(conn, account_id)
         if not tokens:
@@ -473,10 +477,27 @@ def handle_sync_push(event, user):
 
         cur = conn.cursor()
         try:
+            # Legacy column write — PR 3.5 will stop writing this once SF
+            # reads/writes route through client_salesforce_links.
             cur.execute(
                 "UPDATE clients SET salesforce_account_id = %s, "
                 "salesforce_last_sync = NOW() WHERE id = %s",
                 (sf_account_id, client['id']),
+            )
+            # PR 3.4 dual-write — per-tenant SF mapping. Each (client_id,
+            # account_id) tracks the actor account's SF Account Id for this
+            # client. The actor's account_id (from JWT) is the row key, not
+            # the client's owning account_id — that's the whole point: each
+            # tenant maps the same shared client to a different SF org.
+            cur.execute(
+                """INSERT INTO client_salesforce_links
+                       (client_id, account_id, salesforce_account_id,
+                        salesforce_last_sync)
+                   VALUES (%s, %s, %s, NOW())
+                   ON CONFLICT (client_id, account_id) DO UPDATE
+                       SET salesforce_account_id = EXCLUDED.salesforce_account_id,
+                           salesforce_last_sync = EXCLUDED.salesforce_last_sync""",
+                (client['id'], account_id, sf_account_id),
             )
             conn.commit()
         finally:
