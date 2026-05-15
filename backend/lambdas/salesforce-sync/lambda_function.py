@@ -368,6 +368,19 @@ def handle_callback(event):
                              "(missing access_token / refresh_token / instance_url)")
 
         write_account_tokens(conn, account_id, access, refresh, instance_url)
+
+        # Eagerly probe Account.describe so the push + delete paths don't
+        # pay a describe round-trip on first use. Caches both
+        # salesforce_has_active_field (for soft-delete fallback) and
+        # salesforce_has_sync_field (for XO_Sync_Enabled__c gating).
+        # Non-fatal — lazy probes still run if this errors.
+        try:
+            tokens = read_account_tokens(conn, account_id)
+            if tokens:
+                sf_push.probe_custom_fields(conn, account_id, tokens)
+        except Exception as e:
+            logger.warning("Custom-field probe at Connect failed for account %s: %s",
+                           account_id, e)
     finally:
         conn.close()
 
@@ -582,7 +595,20 @@ def handle_sync_push(event, user):
                 return _err(409, "Awaiting manual SF link — possible matches found. "
                                  "Resolve in the UI before pushing engagement.")
             if decision == 'link':
-                existing_sf_id = payload
+                # payload is now a candidate dict (not bare sf_id) so the
+                # caller can inspect xo_sync gating before adopting.
+                if payload.get('xo_sync') is False:
+                    sf_push._set_status(
+                        conn, client['id'], 'skipped',
+                        error=f"Auto-link skipped: SF Account "
+                              f"{payload['sf_id']} has "
+                              f"{sf_push.XO_SYNC_FIELD}=false",
+                    )
+                    return _err(409, f"Salesforce Account is opted out of XO sync "
+                                     f"({sf_push.XO_SYNC_FIELD}=false). Flip the "
+                                     f"flag in Salesforce or link manually before "
+                                     f"pushing engagement.")
+                existing_sf_id = payload['sf_id']
 
         sf_account_id = _create_or_update_account(
             conn, account_id, tokens, client, existing_sf_id

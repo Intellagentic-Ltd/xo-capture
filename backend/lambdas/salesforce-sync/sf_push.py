@@ -152,6 +152,15 @@ def load_client_for_push(conn, client_id):
 SYNCED_PREFIX = '[Synced from XO Capture]'
 INACTIVE_PREFIX = '[XO-INACTIVE]'
 
+# Org-side opt-in flag. When the SF org has this Checkbox installed on
+# Account, both pull and push respect it: pull side filters via SOQL
+# AND XO_Sync_Enabled__c=TRUE; push side refuses to auto-link Accounts
+# with XO_Sync_Enabled__c=false and stamps new Accounts true on create.
+# Field naming matches the existing pull-path infrastructure in
+# sf_pull.py / sf_contact_pull.py / sf_opportunity_pull.py — do not
+# introduce a parallel `XO_Sync__c` field.
+XO_SYNC_FIELD = 'XO_Sync_Enabled__c'
+
 
 def _build_account_props(client, is_initial_create):
     """Build SF Account property dict. Standard fields only.
@@ -203,14 +212,12 @@ def _build_account_props(client, is_initial_create):
 # ──────────────────────────────────────────────
 # Active__c custom field probe (cached per account)
 # ──────────────────────────────────────────────
-def _read_has_active_field(conn, account_id):
-    """Return cached probe result: True / False / None (never probed)."""
+def _read_cached_field(conn, account_id, column):
+    """Read one cached probe-result boolean column from accounts."""
     cur = conn.cursor()
     try:
-        cur.execute(
-            "SELECT salesforce_has_active_field FROM accounts WHERE id = %s",
-            (account_id,),
-        )
+        cur.execute(f"SELECT {column} FROM accounts WHERE id = %s",
+                    (account_id,))
         row = cur.fetchone()
     finally:
         cur.close()
@@ -219,16 +226,29 @@ def _read_has_active_field(conn, account_id):
     return row[0]
 
 
-def _write_has_active_field(conn, account_id, has_field):
+def _write_cached_field(conn, account_id, column, value):
     cur = conn.cursor()
     try:
-        cur.execute(
-            "UPDATE accounts SET salesforce_has_active_field = %s WHERE id = %s",
-            (has_field, account_id),
-        )
+        cur.execute(f"UPDATE accounts SET {column} = %s WHERE id = %s",
+                    (value, account_id))
         conn.commit()
     finally:
         cur.close()
+
+
+def _describe_account_fields(conn, account_id, tokens):
+    """Single SF describe call. Returns set of Account field API names, or
+    empty set on failure."""
+    try:
+        status, body = sf_call_with_refresh(
+            conn, account_id, tokens, 'GET', '/sobjects/Account/describe/'
+        )
+        if status != 200:
+            return set()
+        return {f.get('name') for f in (body.get('fields') or []) if f.get('name')}
+    except Exception as e:
+        logger.warning("Account describe failed for account %s: %s", account_id, e)
+        return set()
 
 
 def probe_active_field(conn, account_id, tokens):
@@ -238,24 +258,39 @@ def probe_active_field(conn, account_id, tokens):
     Errors during probe are treated as 'no Active__c' (False) — pessimistic
     so the inactive path falls back to the Description prefix, which works
     on every org regardless of custom fields."""
-    cached = _read_has_active_field(conn, account_id)
+    cached = _read_cached_field(conn, account_id, 'salesforce_has_active_field')
     if cached is not None:
         return bool(cached)
-    try:
-        status, body = sf_call_with_refresh(
-            conn, account_id, tokens, 'GET', '/sobjects/Account/describe/'
-        )
-        has_field = False
-        if status == 200:
-            for f in body.get('fields') or []:
-                if f.get('name') == 'Active__c':
-                    has_field = True
-                    break
-    except Exception as e:
-        logger.warning("Active__c probe failed for account %s: %s", account_id, e)
-        has_field = False
-    _write_has_active_field(conn, account_id, has_field)
+    fields = _describe_account_fields(conn, account_id, tokens)
+    has_field = 'Active__c' in fields
+    _write_cached_field(conn, account_id, 'salesforce_has_active_field', has_field)
     return has_field
+
+
+def probe_sync_field(conn, account_id, tokens):
+    """Returns bool — does the org have XO_Sync_Enabled__c on Account?
+    Lazy probe + caches to accounts.salesforce_has_sync_field. The
+    handle_callback flow eagerly seeds this column at Connect time to
+    avoid a probe-on-first-push delay, but the lazy path remains for
+    accounts that were connected before this code shipped."""
+    cached = _read_cached_field(conn, account_id, 'salesforce_has_sync_field')
+    if cached is not None:
+        return bool(cached)
+    fields = _describe_account_fields(conn, account_id, tokens)
+    has_field = XO_SYNC_FIELD in fields
+    _write_cached_field(conn, account_id, 'salesforce_has_sync_field', has_field)
+    return has_field
+
+
+def probe_custom_fields(conn, account_id, tokens):
+    """Combined eager probe — one describe call, both flags cached.
+    Called from handle_callback right after tokens are written, so the
+    push + delete paths don't pay the describe cost on first use."""
+    fields = _describe_account_fields(conn, account_id, tokens)
+    _write_cached_field(conn, account_id, 'salesforce_has_active_field',
+                        'Active__c' in fields)
+    _write_cached_field(conn, account_id, 'salesforce_has_sync_field',
+                        XO_SYNC_FIELD in fields)
 
 
 # ──────────────────────────────────────────────
@@ -320,9 +355,15 @@ def get_existing_link(conn, client_id, account_id):
 # ──────────────────────────────────────────────
 # Match logic
 # ──────────────────────────────────────────────
-def _query_accounts(conn, account_id, tokens, where_clause, limit=10):
-    """Run a SOQL Account query. Returns list of dicts {Id, Name, Website}."""
-    q = (f"SELECT Id, Name, Website FROM Account "
+def _query_accounts(conn, account_id, tokens, where_clause, limit=10,
+                    has_sync_field=False):
+    """Run a SOQL Account query. Returns list of dicts {sf_id, name, website,
+    xo_sync}. xo_sync is the XO_Sync_Enabled__c value when the field is
+    installed in the org, else None (unknown / not configured)."""
+    select_fields = "Id, Name, Website"
+    if has_sync_field:
+        select_fields += f", {XO_SYNC_FIELD}"
+    q = (f"SELECT {select_fields} FROM Account "
          f"WHERE {where_clause} LIMIT {limit}")
     status, body = sf_call_with_refresh(
         conn, account_id, tokens, 'GET', '/query/', params={'q': q}
@@ -331,20 +372,29 @@ def _query_accounts(conn, account_id, tokens, where_clause, limit=10):
         logger.warning("SF query failed: status=%s body=%s where=%s",
                        status, body, where_clause)
         return []
-    return [
-        {'sf_id': r['Id'], 'name': r.get('Name') or '', 'website': r.get('Website') or ''}
-        for r in (body.get('records') or [])
-    ]
+    out = []
+    for r in (body.get('records') or []):
+        out.append({
+            'sf_id': r['Id'],
+            'name': r.get('Name') or '',
+            'website': r.get('Website') or '',
+            'xo_sync': r.get(XO_SYNC_FIELD) if has_sync_field else None,
+        })
+    return out
 
 
 def match_sf_account(conn, account_id, tokens, client):
     """Decide what to do with this client.
 
     Returns a tuple (decision, payload) where decision is one of:
-      'link'           — adopt the single matched Account. payload = sf_id (str).
+      'link'           — adopt the single matched Account. payload = candidate dict.
       'flag_candidates'— flag for manual review. payload = list of candidate dicts.
       'create_new'     — no match. payload = None.
-    """
+
+    Candidate dicts include `xo_sync` (true/false/null) so callers can gate
+    push behaviour on the org-side opt-in flag."""
+    has_sync = probe_sync_field(conn, account_id, tokens)
+
     # 1. Domain match against Website.
     domain = _client_domain(client)
     if domain:
@@ -355,9 +405,10 @@ def match_sf_account(conn, account_id, tokens, client):
         candidates = _query_accounts(
             conn, account_id, tokens,
             f"Website LIKE '%{escaped}%'",
+            has_sync_field=has_sync,
         )
         if len(candidates) == 1:
-            return 'link', candidates[0]['sf_id']
+            return 'link', candidates[0]
         if len(candidates) > 1:
             return 'flag_candidates', candidates
 
@@ -368,6 +419,7 @@ def match_sf_account(conn, account_id, tokens, client):
         candidates = _query_accounts(
             conn, account_id, tokens,
             f"Name = '{soql_escape(name)}'",
+            has_sync_field=has_sync,
         )
         if candidates:
             return 'flag_candidates', candidates
@@ -380,8 +432,12 @@ def match_sf_account(conn, account_id, tokens, client):
 # SF Account operations
 # ──────────────────────────────────────────────
 def _create_account(conn, account_id, tokens, client):
-    """POST a new SF Account. is_initial_create=True so prefix is applied."""
+    """POST a new SF Account. is_initial_create=True so the SYNCED_PREFIX
+    is applied. If the org has XO_Sync_Enabled__c installed, stamp it true
+    so this new Account participates in subsequent pulls + pushes."""
     props = _build_account_props(client, is_initial_create=True)
+    if probe_sync_field(conn, account_id, tokens):
+        props[XO_SYNC_FIELD] = True
     status, body = sf_call_with_refresh(
         conn, account_id, tokens, 'POST', '/sobjects/Account/', json_body=props,
     )
@@ -475,10 +531,24 @@ def push_client(conn, account_id, tokens, client_id, change_type):
 
         decision, payload = match_sf_account(conn, account_id, tokens, client)
         if decision == 'link':
-            _patch_account(conn, account_id, tokens, payload, client)
-            _upsert_link(conn, client_id, account_id, payload)
+            candidate = payload
+            # Domain match found exactly one Account. If the org has
+            # XO_Sync_Enabled__c installed and this Account is opted-out
+            # (false), skip the auto-link entirely — don't link, don't
+            # patch, don't override the flag. Status becomes 'skipped' so
+            # the operator can flip the flag in SF and the next Sync Now
+            # retries.
+            if candidate.get('xo_sync') is False:
+                reason = (f"Auto-link skipped: SF Account {candidate['sf_id']} "
+                          f"has {XO_SYNC_FIELD}=false")
+                _set_status(conn, client_id, 'skipped',
+                            error=reason, candidates=None)
+                return {'status': 'skipped', 'reason': reason,
+                        'sf_id': candidate['sf_id']}
+            _patch_account(conn, account_id, tokens, candidate['sf_id'], client)
+            _upsert_link(conn, client_id, account_id, candidate['sf_id'])
             _set_status(conn, client_id, 'pushed', candidates=None)
-            return {'status': 'pushed', 'sf_id': payload, 'created': False}
+            return {'status': 'pushed', 'sf_id': candidate['sf_id'], 'created': False}
         if decision == 'flag_candidates':
             _set_status(conn, client_id, 'awaiting_manual_link',
                         candidates=payload)
@@ -537,15 +607,17 @@ def resolve_match(conn, account_id, tokens, client_id, action, sf_account_id=Non
 # ──────────────────────────────────────────────
 def push_all_pending(conn, account_id, tokens):
     """Push every client owned by `account_id` whose push status is
-    pending or failed. Skips awaiting_manual_link (those need user input)
-    and pushed (already in sync)."""
+    pending, failed, or skipped. Skipped is included so that flipping
+    XO_Sync_Enabled__c=true in SF and then running Sync Now adopts the
+    Account on the next pass. awaiting_manual_link is excluded — those
+    need explicit user resolution in the modal."""
     cur = conn.cursor()
     try:
         cur.execute(
             """SELECT id FROM clients
                WHERE account_id = %s
                  AND (salesforce_push_status IS NULL
-                      OR salesforce_push_status IN ('pending', 'failed'))""",
+                      OR salesforce_push_status IN ('pending', 'failed', 'skipped'))""",
             (account_id,),
         )
         ids = [row[0] for row in cur.fetchall()]

@@ -1328,6 +1328,22 @@ function SfMatchModal({ client, onClose, onResolved }) {
     }
   }
 
+  // Org-side opt-in flag: when a candidate's xo_sync is explicitly false,
+  // linking would override the SF admin's deliberate exclusion. Require a
+  // separate confirm click before submitting.
+  const requestLink = (candidate) => {
+    if (candidate.xo_sync === false) {
+      const ok = window.confirm(
+        `Salesforce Account ${candidate.name || candidate.sf_id} has ` +
+        `XO_Sync_Enabled__c set to false — the SF admin has excluded it ` +
+        `from XO sync.\n\nLink anyway? Future XO updates will push to this ` +
+        `Account regardless of the flag.`,
+      )
+      if (!ok) return
+    }
+    resolve('link', candidate.sf_id)
+  }
+
   return (
     <div style={{
       position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
@@ -1351,37 +1367,53 @@ function SfMatchModal({ client, onClose, onResolved }) {
             No candidate details available. You can still create a new Account.
           </p>
         )}
-        {candidates.map((c) => (
-          <div key={c.sf_id} style={{
-            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-            border: '1px solid #e5e7eb', borderRadius: 8,
-            padding: '0.65rem 0.85rem', marginBottom: '0.5rem',
-          }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: '0.875rem', fontWeight: 600, color: '#1a1a1a' }}>
-                {c.name || '(no name)'}
+        {candidates.map((c) => {
+          const optedOut = c.xo_sync === false
+          return (
+            <div key={c.sf_id} style={{
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              border: optedOut ? '1px solid #eab308' : '1px solid #e5e7eb',
+              background: optedOut ? '#fefce8' : 'transparent',
+              borderRadius: 8, padding: '0.65rem 0.85rem', marginBottom: '0.5rem',
+            }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: '0.875rem', fontWeight: 600, color: '#1a1a1a',
+                              display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  {c.name || '(no name)'}
+                  {optedOut && (
+                    <span title="XO_Sync_Enabled__c is false on this Account"
+                          style={{
+                            fontSize: '0.6rem', fontWeight: 600,
+                            padding: '0.1rem 0.35rem', borderRadius: 4,
+                            background: '#854d0e', color: '#fefce8',
+                          }}>
+                      XO sync OFF
+                    </span>
+                  )}
+                </div>
+                {c.website && (
+                  <div style={{ fontSize: '0.7rem', color: '#6b7280' }}>{c.website}</div>
+                )}
+                <div style={{ fontSize: '0.65rem', color: '#9ca3af', fontFamily: 'monospace' }}>
+                  {c.sf_id}
+                </div>
               </div>
-              {c.website && (
-                <div style={{ fontSize: '0.7rem', color: '#6b7280' }}>{c.website}</div>
-              )}
-              <div style={{ fontSize: '0.65rem', color: '#9ca3af', fontFamily: 'monospace' }}>
-                {c.sf_id}
-              </div>
+              <button
+                disabled={busy}
+                onClick={() => requestLink(c)}
+                style={{
+                  padding: '0.35rem 0.85rem', borderRadius: 6, fontSize: '0.75rem',
+                  fontWeight: 600,
+                  background: optedOut ? '#854d0e' : '#00a1e0', color: '#fff',
+                  border: 'none', cursor: busy ? 'wait' : 'pointer',
+                  opacity: busy ? 0.6 : 1,
+                }}
+              >
+                {optedOut ? 'Link anyway' : 'Link to this Account'}
+              </button>
             </div>
-            <button
-              disabled={busy}
-              onClick={() => resolve('link', c.sf_id)}
-              style={{
-                padding: '0.35rem 0.85rem', borderRadius: 6, fontSize: '0.75rem',
-                fontWeight: 600, background: '#00a1e0', color: '#fff',
-                border: 'none', cursor: busy ? 'wait' : 'pointer',
-                opacity: busy ? 0.6 : 1,
-              }}
-            >
-              Link to this Account
-            </button>
-          </div>
-        ))}
+          )
+        })}
         {err && (
           <div style={{
             marginTop: '0.5rem', padding: '0.5rem 0.75rem', borderRadius: 6,
@@ -9871,6 +9903,9 @@ function ConfigurationScreen({ theme, toggleTheme, buttons, setButtons, systemBu
                   )}
                   <p style={{ fontSize: '0.65rem', color: C.muted, fontStyle: 'italic', margin: 0, lineHeight: 1.4 }}>
                     Connected via OAuth as a Salesforce user in this org. We recommend connecting a dedicated Salesforce Integration User so sync isn't tied to an individual's permissions.
+                  </p>
+                  <p style={{ fontSize: '0.65rem', color: C.muted, fontStyle: 'italic', margin: 0, lineHeight: 1.4 }}>
+                    To control which Salesforce Accounts sync with XO Capture, add a custom Checkbox field named XO_Sync_Enabled__c to the Account object in Salesforce Setup. Accounts without this field or with it unchecked will be excluded from sync.
                   </p>
                   {salesforceLastPullAt && (
                     <div style={{

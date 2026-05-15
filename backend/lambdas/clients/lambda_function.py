@@ -459,7 +459,8 @@ def _run_bidi_push_migration():
         """)
         cur.execute("""
             ALTER TABLE accounts
-            ADD COLUMN IF NOT EXISTS salesforce_has_active_field BOOLEAN
+            ADD COLUMN IF NOT EXISTS salesforce_has_active_field BOOLEAN,
+            ADD COLUMN IF NOT EXISTS salesforce_has_sync_field BOOLEAN
         """)
         conn.commit()
         cur.close()
